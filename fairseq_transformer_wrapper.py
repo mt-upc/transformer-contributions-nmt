@@ -165,7 +165,7 @@ class FairseqTransformerHub(GeneratorHubInterface):
         )
         return attn_weights
 
-    def normalize_contrib(self, x, mode=None, temperature=0.5):
+    def normalize_contrib(self, x, mode=None, temperature=0.5, resultant_norm=None):
         if mode == 'min_max':
             # Min-max normalization (higher layers don't affect)
             x_min = x.min(-1, keepdim=True)[0]
@@ -178,10 +178,15 @@ class FairseqTransformerHub(GeneratorHubInterface):
             x_norm = x / x.sum(dim=-1, keepdim=True)
             # x_norm = x_norm.clamp(min=0)
         elif mode == 'min_sum':
-            x_min = x.min(-1, keepdim=True)[0]
-            # x_max = x.max(-1, keepdim=True)
-            x_norm = x + torch.abs(x_min)
-            x_norm = x_norm / x_norm.sum(dim=-1, keepdim=True)
+            if resultant_norm == None:
+                x_min = x.min(-1, keepdim=True)[0]
+                # x_max = x.max(-1, keepdim=True)
+                x_norm = x + torch.abs(x_min)
+                x_norm = x_norm / x_norm.sum(dim=-1, keepdim=True)
+            else:
+                x_norm = x + torch.abs(resultant_norm.unsqueeze(1))
+                x_norm = torch.clip(x_norm,min=0)
+                x_norm = x_norm / x_norm.sum(dim=-1,keepdim=True)
         elif mode == 'max_substract':
             x_min = x.min(1, keepdim=True)
             # x_max = x.max(-1, keepdim=True)
@@ -307,6 +312,7 @@ class FairseqTransformerHub(GeneratorHubInterface):
 
         if contrib_type == 'l1':
             contributions = -F.pairwise_distance(contributors, resultant, p=1)
+            resultants_norm = torch.norm(torch.squeeze(resultant),p=1,dim=-1)
         elif contrib_type == 'l2':
             contributions = -F.pairwise_distance(contributors, resultant, p=2)
         else:
@@ -319,7 +325,7 @@ class FairseqTransformerHub(GeneratorHubInterface):
         #        .triu(1).mul(max_contr)).min(-1, keepdim=True)[0].min(-2, keepdim=True)[0]
         #    contributions = tri_contr + torch.ones_like(contributions).triu(1).mul(min_tri_contr)
 
-        return contributions
+        return contributions, resultants_norm
     
     def get_contributions(self, src_tensor, tgt_tensor, contrib_type='l1', norm_mode=None, contrib_inc_biases=False, result_inc_biases=True):
         contributions_all = defaultdict(list)
@@ -336,21 +342,20 @@ class FairseqTransformerHub(GeneratorHubInterface):
                 contrib_inc_biases,
                 result_inc_biases
             )
+
         
         for attn in self.ATTN_MODULES:
             enc_dec_, _, attn_module_ = self.parse_module_name(attn)
             enc_dec = self.get_module(enc_dec_)
 
             for l in range(len(enc_dec.layers)):
-                contributions = f(attn.replace('.', f'.{l}.'))
-                contributions = self.normalize_contrib(contributions, norm_mode).unsqueeze(1)
+                contributions, resultant_norms = f(attn.replace('.', f'.{l}.'))
+                contributions = self.normalize_contrib(contributions, norm_mode, resultant_norm=resultant_norms).unsqueeze(1)
                 # Mask upper triangle of decoder self-attention matrix (and normalize)
-                if attn == 'decoder.self_attn':
-                    contributions = torch.tril(torch.squeeze(contributions,dim=1))
-                    contributions = contributions / contributions.sum(dim=-1, keepdim=True)
-                    contributions = contributions.unsqueeze(1)
-                #print('attn',attn)
-                #print(contributions.sum(dim=-1))
+                # if attn == 'decoder.self_attn':
+                #     contributions = torch.tril(torch.squeeze(contributions,dim=1))
+                #     contributions = contributions / contributions.sum(dim=-1, keepdim=True)
+                #     contributions = contributions.unsqueeze(1)
                 contributions_all[attn].append(contributions)
         contributions_all = {k: torch.cat(v, dim=1) for k, v in contributions_all.items()}
         return contributions_all

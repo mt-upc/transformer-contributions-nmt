@@ -1,0 +1,7 @@
+einops==0.3.2
+fairseq==0.10.2
+fairseq.egg==info
+matplotlib==3.1.0
+pandas==1.1.4
+seaborn==0.11.0
+torch==1.10.1

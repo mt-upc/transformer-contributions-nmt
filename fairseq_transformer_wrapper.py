@@ -488,3 +488,25 @@ class FairseqTransformerHub(GeneratorHubInterface):
                         q_tok,
                         title=f"{contrib_type}; {a}; layer: {l}"
                     )
+
+def parse_single_alignment(string, reverse=False, one_add=False, one_indexed=False):
+    """
+    Given an alignment (as a string such as "3-2" or "5p4"), return the index pair.
+    """
+    assert '-' in string or 'p' in string
+
+    a, b = string.replace('p', '-').split('-')
+    a, b = int(a), int(b)
+
+    if one_indexed:
+        a = a - 1
+        b = b - 1
+    
+    if one_add:
+        a = a + 1
+        b = b + 1
+
+    if reverse:
+        a, b = b, a
+
+    return a, b

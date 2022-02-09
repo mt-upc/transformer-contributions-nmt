@@ -64,8 +64,21 @@ class FairseqTransformerHub(GeneratorHubInterface):
         tgt_tensor = self.task.dataset(split)[index]['target']
         tgt_tok = self.decode(tgt_tensor, self.task.tgt_dict)
         tgt_sent = self.decode(tgt_tensor, self.task.tgt_dict, as_string=True)
+        
     
         return src_sent, src_tok, src_tensor, tgt_sent, tgt_tok, tgt_tensor
+
+    def get_lm_sample(self, split, index):
+        if split not in self.task.datasets.keys():
+            self.task.load_dataset(split)
+
+        src_tensor = self.task.dataset(split)[index]['source']
+        src_tok = self.decode(src_tensor, self.task.source_dictionary)
+        src_sent = self.decode(src_tensor, self.task.source_dictionary, as_string=True)
+
+        return src_sent, src_tok, src_tensor
+
+
     
     def parse_module_name(self, module_name):
         """ Returns (enc_dec, layer, module)"""
@@ -131,6 +144,32 @@ class FairseqTransformerHub(GeneratorHubInterface):
         
         return model_output, log_probs, encoder_out, layer_inputs, layer_outputs
 
+    def trace_lm_forward(self, tgt_tensor):
+        self.zero_grad()
+
+        layer_inputs = defaultdict(list)
+        layer_outputs = defaultdict(list)
+
+        def save_activation(name, mod, inp, out):
+            layer_inputs[name].append(inp)
+            layer_outputs[name].append(out)
+
+        handles = {}
+
+        for name, layer in self.named_modules():
+            handles[name] = layer.register_forward_hook(partial(save_activation, name))
+        
+        tgt_tensor = tgt_tensor.unsqueeze(0).to(self.device)
+
+        model_output, encoder_out = self.models[0](tgt_tensor)
+
+        log_probs = self.models[0].get_normalized_probs(model_output, log_probs=True, sample=None)
+        
+        for k, v in handles.items():
+            handles[k].remove()
+        
+        return model_output, log_probs, encoder_out, layer_inputs, layer_outputs
+
     def __get_attn_weights_module(self, layer_outputs, module_name):
         enc_dec_, l, attn_module_ = self.parse_module_name(module_name)
         
@@ -184,8 +223,10 @@ class FairseqTransformerHub(GeneratorHubInterface):
                 x_norm = x + torch.abs(x_min)
                 x_norm = x_norm / x_norm.sum(dim=-1, keepdim=True)
             else:
+
                 x_norm = x + torch.abs(resultant_norm.unsqueeze(1))
                 x_norm = torch.clip(x_norm,min=0)
+                #x_norm = torch.abs(x_norm)
                 x_norm = x_norm / x_norm.sum(dim=-1,keepdim=True)
         elif mode == 'max_substract':
             x_min = x.min(1, keepdim=True)

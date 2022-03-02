@@ -135,6 +135,10 @@ class FairseqTransformerHub(GeneratorHubInterface):
             tgt_tensor[:-1]
         ]).unsqueeze(0).to(self.device)
 
+        # print('src_tensor',src_tensor.size())
+        # print('src_tensor.size(-1)',src_tensor.size(-1))
+        # print('tgt_tensor',tgt_tensor.size())
+
         model_output, encoder_out = self.models[0](src_tensor, src_tensor.size(-1), tgt_tensor, )
 
         log_probs = self.models[0].get_normalized_probs(model_output, log_probs=True, sample=None)

@@ -63,7 +63,19 @@ class FairseqTransformerHub(GeneratorHubInterface):
         
     
         return src_sent, src_tok, src_tensor, tgt_sent, tgt_tok, tgt_tensor
-   
+
+    def get_lm_sample(self, split, index):
+        if split not in self.task.datasets.keys():
+            self.task.load_dataset(split)
+
+        src_tensor = self.task.dataset(split)[index]['source']
+        src_tok = self.decode(src_tensor, self.task.source_dictionary)
+        src_sent = self.decode(src_tensor, self.task.source_dictionary, as_string=True)
+
+        return src_sent, src_tok, src_tensor
+
+
+    
     def parse_module_name(self, module_name):
         """ Returns (enc_dec, layer, module)"""
         parsed_module_name = module_name.split('.')
@@ -99,25 +111,6 @@ class FairseqTransformerHub(GeneratorHubInterface):
         return module
 
     def trace_forward(self, src_tensor, tgt_tensor):
-        r"""Forward-pass through the model.
-        Args:
-            src_tensor (`tensor`):
-                Source sentence tensor.
-            tgt_tensor (`tensor`):
-                Target sentence tensor (teacher forcing).
-        Returns:
-            model_output ('tuple'):
-                output of the model.
-            log_probs:
-                log probabilities output by the model.
-            encoder_output ('dict'):
-                dictionary with 'encoder_out', 'encoder_padding_mask', 'encoder_embedding',
-                                'encoder_states', 'src_tokens', 'src_lengths', 'attn_weights'.
-            layer_inputs:
-                dictionary with the input of the modeules of the model.
-            layer_outputs:
-                dictionary with the input of the modeules of the model.
-        """
         self.zero_grad()
 
         layer_inputs = defaultdict(list)
@@ -147,35 +140,31 @@ class FairseqTransformerHub(GeneratorHubInterface):
         
         return model_output, log_probs, encoder_out, layer_inputs, layer_outputs
 
-    def normalize_contrib(self, x, mode=None, temperature=0.5, resultant_norm=None):
-        """ Normalization applied to each row of the layer-wise contributions."""
-        if mode == 'min_max':
-            # Min-max normalization
-            x_min = x.min(-1, keepdim=True)[0]
-            x_max = x.max(-1, keepdim=True)[0]
-            x_norm = (x - x_min) / (x_max - x_min)
-            x_norm = x_norm / x_norm.sum(dim=-1, keepdim=True)
-        elif mode == 'softmax':
-            # Softmax
-            x_norm = F.softmax(x / temperature, dim=-1)
-        elif mode == 'sum_one':
-            # Sum one
-            x_norm = x / x.sum(dim=-1, keepdim=True)
-        elif mode == 'min_sum':
-            # Minimum value selection
-            if resultant_norm == None:
-                x_min = x.min(-1, keepdim=True)[0]
-                x_norm = x + torch.abs(x_min)
-                x_norm = x_norm / x_norm.sum(dim=-1, keepdim=True)
-            else:
-                x_norm = x + torch.abs(resultant_norm.unsqueeze(1))
-                x_norm = torch.clip(x_norm,min=0)
-                x_norm = x_norm / x_norm.sum(dim=-1,keepdim=True)
-        elif mode is None:
-            x_norm = x
-        else:
-            raise AttributeError(f"Unknown normalization mode '{mode}'")
-        return x_norm
+    def trace_lm_forward(self, tgt_tensor):
+        self.zero_grad()
+
+        layer_inputs = defaultdict(list)
+        layer_outputs = defaultdict(list)
+
+        def save_activation(name, mod, inp, out):
+            layer_inputs[name].append(inp)
+            layer_outputs[name].append(out)
+
+        handles = {}
+
+        for name, layer in self.named_modules():
+            handles[name] = layer.register_forward_hook(partial(save_activation, name))
+        
+        tgt_tensor = tgt_tensor.unsqueeze(0).to(self.device)
+
+        model_output, encoder_out = self.models[0](tgt_tensor)
+
+        log_probs = self.models[0].get_normalized_probs(model_output, log_probs=True, sample=None)
+        
+        for k, v in handles.items():
+            handles[k].remove()
+        
+        return model_output, log_probs, encoder_out, layer_inputs, layer_outputs
 
     def __get_attn_weights_module(self, layer_outputs, module_name):
         enc_dec_, l, attn_module_ = self.parse_module_name(module_name)
@@ -210,13 +199,46 @@ class FairseqTransformerHub(GeneratorHubInterface):
             n_h=num_heads
         )
         return attn_weights
+
+    def normalize_contrib(self, x, mode=None, temperature=0.5, resultant_norm=None):
+        if mode == 'min_max':
+            # Min-max normalization (higher layers don't affect)
+            x_min = x.min(-1, keepdim=True)[0]
+            x_max = x.max(-1, keepdim=True)[0]
+            x_norm = (x - x_min) / (x_max - x_min)
+            x_norm = x_norm / x_norm.sum(dim=-1, keepdim=True)
+        elif mode == 'softmax':
+            x_norm = F.softmax(x / temperature, dim=-1)
+        elif mode == 'sum_one':
+            x_norm = x / x.sum(dim=-1, keepdim=True)
+            # x_norm = x_norm.clamp(min=0)
+        elif mode == 'min_sum':
+            if resultant_norm == None:
+                x_min = x.min(-1, keepdim=True)[0]
+                # x_max = x.max(-1, keepdim=True)
+                x_norm = x + torch.abs(x_min)
+                x_norm = x_norm / x_norm.sum(dim=-1, keepdim=True)
+            else:
+                x_norm = x + torch.abs(resultant_norm.unsqueeze(1))
+                x_norm = torch.clip(x_norm,min=0)
+                #x_norm = torch.abs(x_norm)
+                x_norm = x_norm / x_norm.sum(dim=-1,keepdim=True)
+        elif mode == 'max_substract':
+            x_min = x.min(1, keepdim=True)
+            # x_max = x.max(-1, keepdim=True)
+            x_norm = x - torch.abs(x_min)
+            x_norm = x_norm / x_norm.sum(dim=-1, keepdim=True)
+        elif mode is None:
+            x_norm = x
+        else:
+            raise AttributeError(f"Unknown normalization mode '{mode}'")
+        return x_norm
     
-    def __get_contributions_module(self, layer_inputs, layer_outputs, contrib_type, module_name):
+    def __get_contributions_module(self, layer_inputs, layer_outputs, contrib_type, contrib_inc_biases, result_inc_biases, module_name):
         enc_dec_, l, attn_module_ = self.parse_module_name(module_name)
-        attn_w = self.__get_attn_weights_module(layer_outputs, module_name) # (batch_size, num_heads, src:len, src_len)
+        attn_w = self.__get_attn_weights_module(layer_outputs, module_name)
         
         def l_transform(x, w_ln):
-            '''Computes mean and performs hadamard product with ln weight (w_ln) as a linear transformation.'''
             ln_param_transf = torch.diag(w_ln)
             ln_mean_transf = torch.eye(w_ln.size(0)).to(w_ln.device) - \
                 1 / w_ln.size(0) * torch.ones_like(ln_param_transf).to(w_ln.device)
@@ -228,22 +250,33 @@ class FairseqTransformerHub(GeneratorHubInterface):
                 ln_param_transf
             )
             return out
-
         attn_module = self.get_module(module_name)
         w_o = attn_module.out_proj.weight
         b_o = attn_module.out_proj.bias
         
         ln = self.get_module(f'{module_name}_layer_norm')
-        w_ln = ln.weight.data
+        w_ln = ln.weight
         b_ln = ln.bias
         eps_ln = ln.eps
         
         in_q = layer_inputs[f"models.0.{enc_dec_}.layers.{l}.{attn_module_}.q_proj"][0][0].transpose(0, 1)
         in_v = layer_inputs[f"models.0.{enc_dec_}.layers.{l}.{attn_module_}.v_proj"][0][0].transpose(0, 1)
+        t_q = in_q.size(1)
+        t_v = in_v.size(1)
 
         if "self_attn" in attn_module_:
-            residual_ = torch.einsum('sk,bsd->bskd', torch.eye(in_q.size(1)).to(b_o.device), in_q)
+            residual_ = torch.diag_embed(in_q.transpose(-1, -2), dim1=-3, dim2=-2)
+            b_o_ = (b_o * torch.eye(t_q).unsqueeze(-1).to(b_o.device))
+            b_ln_ = (b_ln * torch.eye(t_q).unsqueeze(-1).to(b_ln.device))
         else:
+            # print('in_q',in_q.size())
+            # print('in_v',in_v.size())
+            #b_o_ = (b_o * torch.eye(t_q).unsqueeze(-1).to(b_o.device))
+            #b_ln_ = (b_ln * torch.eye(t_q).unsqueeze(-1).to(b_ln.device))
+            #residual_ = in_q.unsqueeze(-2) / t_v
+            #b_o_ = b_o / t_v
+            #b_ln_ = b_ln / t_v
+            ## Javi
             residual_ = in_q
 
         v = attn_module.v_proj(in_v)
@@ -266,55 +299,73 @@ class FairseqTransformerHub(GeneratorHubInterface):
             v,
             w_o
         )
-
-        # Add residual
         if "self_attn" in attn_module_:
-            out_qv_pre_ln = attn_v_wo + residual_
-        # Concatenate residual in cross-attention (as another value vector)
+            out_qv_pre_ln = attn_v_wo + residual_# + b_o_
         else:
-            out_qv_pre_ln = torch.cat((attn_v_wo,residual_.unsqueeze(-2)),dim=2)
-        
-        # Assert MHA output + residual is equal to pre-layernorm input
+            attn_v_wo = torch.cat((attn_v_wo,residual_.unsqueeze(-2)),dim=2)
+            out_qv_pre_ln = attn_v_wo
         out_q_pre_ln = out_qv_pre_ln.sum(-2) + b_o
+
         out_q_pre_ln_th = layer_inputs[f"models.0.{enc_dec_}.layers.{l}.{attn_module_}_layer_norm"][0][0].transpose(0, 1)
         assert torch.dist(out_q_pre_ln_th, out_q_pre_ln).item() < 1e-3 * out_q_pre_ln.numel()
 
-        ln_std_coef = 1/(out_q_pre_ln_th + eps_ln).std(-1).view(1,-1, 1).unsqueeze(-1) # (batch,src_len,1,1)
-        transformed_vectors = l_transform(out_qv_pre_ln, w_ln)*ln_std_coef # (batch,src_len,tgt_len,embed_dim)
-        dense_bias_term = l_transform(b_o, w_ln)*ln_std_coef # (batch,src_len,1,embed_dim)
-        attn_output = transformed_vectors.sum(dim=2) # (batch,seq_len,embed_dim)
-        resultant = attn_output + dense_bias_term.squeeze(2) + b_ln # (batch,seq_len,embed_dim)   
+        if "self_attn" in attn_module_:
+            ln_std_coef = 1/(out_q_pre_ln + eps_ln).std(-1).view(-1, 1, 1)
+            out_qv = ln_std_coef * l_transform(attn_v_wo, w_ln) + ln_std_coef * l_transform(residual_, w_ln)  + ln_std_coef * l_transform(b_o_, w_ln) +  b_ln_
+            out_q = out_qv.sum(-2)
+            #print('out_q',out_q[0,0,:10])
+        else:
+            ln_std_coef = 1/(out_q_pre_ln + eps_ln).std(-1) # (1,9)
+            ln_std_coef = ln_std_coef.view(1,-1, 1) # (1,9,1,1)
+            out_qv = ln_std_coef.unsqueeze(-1) * l_transform(attn_v_wo, w_ln) # l_transform(attn_v_wo, w_ln) -> [1, 9, 14, 512]
+            out_q = out_qv.sum(-2) + (ln_std_coef.unsqueeze(-1) * l_transform(b_o, w_ln)).squeeze(2) # [1, 9, 512]
+            
 
-        # Assert resultant (decomposed attention block output) is equal to the real attention block output
+        
+
+        #out_q_th_1 = ln_std_coef.squeeze(-1) * l_transform(out_q_pre_ln, w_ln) + b_ln
         out_q_th_2 = layer_outputs[f"models.0.{enc_dec_}.layers.{l}.{attn_module_}_layer_norm"][0].transpose(0, 1)
-        assert torch.dist(out_q_th_2, resultant).item() < 1e-3 * resultant.numel()
+        #print('real_output',out_q_th_2[0,0,:10])
+        
+        # assert torch.dist(out_q_th_2, out_q).item() < 1e-3 * out_q.numel()
+        # assert torch.dist(out_q_th_2, out_q).item() < 1e-3 * out_q.numel()
+
+        if contrib_inc_biases:
+            contributors = out_qv
+        else:
+            if "self_attn" in attn_module_:
+                contributors = out_qv - ln_std_coef * l_transform(b_o_, w_ln) - b_ln_
+            else:
+                contributors = out_qv - ln_std_coef.unsqueeze(-1) * l_transform(b_o, w_ln) # [1, 9, 14, 512]
+
+        if result_inc_biases:
+            if "self_attn" in attn_module_:
+                resultant = out_q.unsqueeze(-2)
+            else:
+                resultant = (out_q + b_ln).unsqueeze(2) # [1, 9, 1, 512]
+                #print('resultant',resultant[0,0,0,:10])
+        else:
+            resultant = out_q.unsqueeze(-2) - \
+                (ln_std_coef * l_transform(b_o_, w_ln)).sum(-2, keepdim=True) - b_ln
 
         if contrib_type == 'l1':
-            contributions = -F.pairwise_distance(transformed_vectors, resultant.unsqueeze(2), p=1)
-            
+            contributions = -F.pairwise_distance(contributors, resultant, p=1)
             resultants_norm = torch.norm(torch.squeeze(resultant),p=1,dim=-1)
         elif contrib_type == 'l2':
-            contributions = -F.pairwise_distance(transformed_vectors, resultant.unsqueeze(2), p=2)
+            contributions = -F.pairwise_distance(contributors, resultant, p=2)
         else:
             raise ArgumentError(f"contribution_type '{contrib_type}' unknown")
+        
+        #if enc_dec_ == 'decoder' and attn_module_ == 'self_attn':
+        #    tri_contr = contributions.tril(0)
+        #    max_contr = contributions.max(-1, keepdim=True)[0].max(-2, keepdim=True)[0]
+        #    min_tri_contr = (tri_contr + torch.ones_like(contributions)\
+        #        .triu(1).mul(max_contr)).min(-1, keepdim=True)[0].min(-2, keepdim=True)[0]
+        #    contributions = tri_contr + torch.ones_like(contributions).triu(1).mul(min_tri_contr)
 
         return contributions, resultants_norm
     
-    def get_contributions(self, src_tensor, tgt_tensor, contrib_type='l1', norm_mode='min_sum'):
-        r"""
-        Get contributions for each ATTN_MODULE: 'encoder.self_attn', 'decoder.self_attn', 'decoder.encoder_attn.
-        Args:
-            src_tensor (`tensor` ()):
-                Source sentence tensor.
-            tgt_tensor (`tensor` ()):
-                Target sentence tensor (teacher forcing).
-            contrib_type (`str`, defaults to `l1` (Ferrando et al ., 2022)):
-                Type of layer-wise contribution measure: l1, l2, or attn_w.
-            norm_mode ('str', defaults to `min_sum` (Ferrando et al ., 2022)):
-                Type of normalization applied to layer-wise contributions: 'min_sum', 'min_max', 'sum_one', 'softmax'.
-        Returns:
-            Dictionary with ATTN_MODULE as keys, and tensor with contributions (batch_size, num_layers, src_len, tgt_len) as values.
-        """
+    def get_contributions(self, src_tensor, tgt_tensor, contrib_type='l1', norm_mode=None, contrib_inc_biases=False, result_inc_biases=True):
         contributions_all = defaultdict(list)
         _, _, _, layer_inputs, layer_outputs = self.trace_forward(src_tensor, tgt_tensor)
         
@@ -325,9 +376,12 @@ class FairseqTransformerHub(GeneratorHubInterface):
                 self.__get_contributions_module,
                 layer_inputs,
                 layer_outputs,
-                contrib_type
+                contrib_type,
+                contrib_inc_biases,
+                result_inc_biases
             )
 
+        
         for attn in self.ATTN_MODULES:
             enc_dec_, _, attn_module_ = self.parse_module_name(attn)
             enc_dec = self.get_module(enc_dec_)
@@ -345,93 +399,53 @@ class FairseqTransformerHub(GeneratorHubInterface):
         return contributions_all
 
     def get_contribution_rollout(self, src_tensor, tgt_tensor, contrib_type='l1', norm_mode='min_sum', **contrib_kwargs):
-        # c = self.get_contributions(src_tensor, tgt_tensor, contrib_type, norm_mode, **contrib_kwargs)
-        # if contrib_type == 'attn_w':
-        #     c = {k: v.sum(2) for k, v in c.items()}
-        
-
-        # Rollout encoder
-        def compute_joint_attention(att_mat):
-            """ Compute attention rollout given contributions or attn weights + residual."""
-
-            aug_att_mat =  att_mat
-            device = att_mat.device
-            joint_attentions = torch.zeros(aug_att_mat.size()).to(device)
-
-            layers = joint_attentions.shape[0]
-            joint_attentions[0] = aug_att_mat[0]
-            
-            for i in range(1,layers):
-                joint_attentions[i] = torch.matmul(aug_att_mat[i],joint_attentions[i-1])
-                
-            return joint_attentions
-
+        c = self.get_contributions(src_tensor, tgt_tensor, contrib_type, norm_mode, **contrib_kwargs)
+        if contrib_type == 'attn_w':
+            c = {k: v.sum(2) for k, v in c.items()}
         c_roll = defaultdict(list)
         enc_sa = 'encoder.self_attn'
+        _, layers, _, t_in = c[enc_sa].size()
 
-        # Compute contributions rollout encoder self-attn
-        enc_self_attn_contributions = torch.squeeze(self.get_contributions(src_tensor, tgt_tensor, 'l1', norm_mode='min_sum')[enc_sa])
-        layers, _, _ = enc_self_attn_contributions.size()
-        enc_self_attn_contributions_mix = compute_joint_attention(enc_self_attn_contributions)
-        c_roll[enc_sa] = enc_self_attn_contributions_mix
-
-        # Get last layer relevances w.r.t input
-        relevances_enc_self_attn = enc_self_attn_contributions_mix[-1]
-        # repeat num_layers times
-        relevances_enc_self_attn = relevances_enc_self_attn.unsqueeze(0).repeat(layers, 1, 1)
-            
-        def rollout(C, C_enc_out):
-            """ Contributions rollout whole Transformer-NMT model.
-                Args:
-                    C: [cross_attn;self_dec_attn] before encoder rollout
-                    C_enc_out: encoder rollout last layer
-            """
-            src_len = C.size(2) - C.size(1)
-            tgt_len = C.size(1)
-
-            C_sa_roll = C[:, :, -tgt_len:]     # Self-att, only has 1 layer (last)
-            C_ed_roll = torch.einsum(          # encoder rollout*cross-attn
-                "lie , ef -> lif",
-                C[:, :, :src_len],             # Cross-att
-                C_enc_out                      # Encoder rollout
+        c_enc_sa_rollout = torch.eye(t_in).view(1, t_in, t_in).to(c[enc_sa].device)
+        for l in range(layers):
+            c_enc_sa_rollout = torch.einsum(
+                'b i j , b j k -> b i k',
+                c_enc_sa_rollout,
+                c[enc_sa][:, l],
             )
-
-            C_roll = torch.cat([C_ed_roll, C_sa_roll], dim=-1) # [(cross_attn*encoder rollout);self_dec_attn]
-            C_roll_new_accum = C_roll[0].unsqueeze(0)
-
-            for i in range(1, len(C)):
-                C_sa_roll_new = torch.einsum(
-                    "ij , jk -> ik",
-                    C_roll[i, :, -tgt_len:],   # Self-att dec
-                    C_roll_new_accum[i-1, :, -tgt_len:], # Self-att (prev. roll)
-                )
-                C_ed_roll_new = torch.einsum(
-                    "ij , jk -> ik",
-                    C_roll[i, :, -tgt_len:],  # Self-att dec
-                    C_roll_new_accum[i-1, :, :src_len], # Cross-att (prev. roll)
-                ) + C_roll[i, :, :src_len]    # Cross-att
-
-                C_roll_new = torch.cat([C_ed_roll_new, C_sa_roll_new], dim=-1)
-                C_roll_new = C_roll_new / C_roll_new.sum(dim=-1,keepdim=True)
-                
-                C_roll_new_accum = torch.cat([C_roll_new_accum, C_roll_new.unsqueeze(0)], dim=0)
-                
-
-            return C_roll_new_accum
-
+            # c_enc_sa_rollout = self.normalize_contrib(c_enc_sa_rollout, norm_mode)
+            c_roll[enc_sa].append(c_enc_sa_rollout.unsqueeze(1))
+            
         dec_sa = 'decoder.self_attn'
         dec_ed = 'decoder.encoder_attn'
-        
-        # Compute joint cross + self attention
-        self_dec_contributions = torch.squeeze(self.get_contributions(src_tensor, tgt_tensor, 'l1', norm_mode='min_sum')[dec_sa])
-        cross_contributions = torch.squeeze(self.get_contributions(src_tensor, tgt_tensor, 'l1', norm_mode='min_sum')[dec_ed])
-        self_dec_contributions = (self_dec_contributions.transpose(1,2)*cross_contributions[:,:,-1].unsqueeze(1)).transpose(1,2)
-        joint_self_cross_contributions = torch.cat((cross_contributions[:,:,:-1],self_dec_contributions),dim=-1)
+        print('c[dec_ed].size()',c[dec_ed].size())
+        _, layers, t_out, t_in = c[dec_ed].size()
 
-        contributions_full_rollout = rollout(joint_self_cross_contributions, relevances_enc_self_attn[-1])
-        c_roll['total'] = contributions_full_rollout
+        c_dec_rollout = torch.eye(t_out).view(1, t_out, t_out, 1).to(c[dec_sa].device)
+        for l in range(layers):
+            c_dec_rollout = torch.einsum(
+                'b i j e , b j k -> b i k e',
+                c_dec_rollout,
+                c[dec_sa][:, l],
+            )
+            
+            c_dec_sa_rollout = c_dec_rollout.sum(-1)
+            # c_dec_sa_rollout = self.normalize_contrib(c_dec_rollout.sum(-1), norm_mode)
+            
+            c_roll[dec_sa].append(c_dec_sa_rollout.unsqueeze(1))
+            
+            c_dec_rollout = torch.einsum(
+                'b i j e , b j e , b e f -> b i j f',
+                c_dec_rollout,
+                c[dec_ed][:, l],
+                c_enc_sa_rollout,
+            )
+            c_dec_ed_rollout = c_dec_rollout.sum(-3)
+            # c_dec_ed_rollout = self.normalize_contrib(c_dec_rollout.sum(-3), norm_mode)
+            
+            c_roll[dec_ed].append(c_dec_ed_rollout.unsqueeze(1))
 
-        return c_roll
+        return {k: torch.cat(v, dim=1) for k, v in c_roll.items()}
     
     def viz_contributions(self, src_tensor, tgt_tensor, contrib_type, roll=False, attn=None, layer=None, head=None, **contrib_kwargs):
         if roll:

@@ -291,7 +291,6 @@ class FairseqTransformerHub(GeneratorHubInterface):
 
         if contrib_type == 'l1':
             contributions = -F.pairwise_distance(transformed_vectors, resultant.unsqueeze(2), p=1)
-            
             resultants_norm = torch.norm(torch.squeeze(resultant),p=1,dim=-1)
         elif contrib_type == 'l2':
             contributions = -F.pairwise_distance(transformed_vectors, resultant.unsqueeze(2), p=2)

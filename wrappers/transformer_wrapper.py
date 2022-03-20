@@ -37,7 +37,7 @@ class FairseqTransformerHub(GeneratorHubInterface):
     def from_pretrained(cls, checkpoint_dir, checkpoint_file, data_name_or_path):
         hub_interface = TransformerModel.from_pretrained(checkpoint_dir, checkpoint_file, data_name_or_path)
         return cls(hub_interface.cfg, hub_interface.task, hub_interface.models)
-
+    
     def encode(self, sentence, dictionary):
         raise NotImplementedError()
     
@@ -51,6 +51,7 @@ class FairseqTransformerHub(GeneratorHubInterface):
     def get_sample(self, split, index):
 
         if split not in self.task.datasets.keys():
+            print(split)
             self.task.load_dataset(split)
 
         src_tensor = self.task.dataset(split)[index]['source']
@@ -133,10 +134,7 @@ class FairseqTransformerHub(GeneratorHubInterface):
             handles[name] = layer.register_forward_hook(partial(save_activation, name))
         
         src_tensor = src_tensor.unsqueeze(0).to(self.device)
-        tgt_tensor = torch.cat([
-            torch.tensor([self.task.tgt_dict.eos_index]),
-            tgt_tensor[:-1]
-        ]).unsqueeze(0).to(self.device)
+        tgt_tensor = tgt_tensor.unsqueeze(0).to(self.device)
 
         model_output, encoder_out = self.models[0](src_tensor, src_tensor.size(-1), tgt_tensor, )
 
@@ -211,7 +209,7 @@ class FairseqTransformerHub(GeneratorHubInterface):
         )
         return attn_weights
     
-    def __get_contributions_module(self, layer_inputs, layer_outputs, contrib_type, module_name):
+    def __get_contributions_module(self, layer_inputs, layer_outputs, contrib_type, pre_layer_norm, module_name):
         enc_dec_, l, attn_module_ = self.parse_module_name(module_name)
         attn_w = self.__get_attn_weights_module(layer_outputs, module_name) # (batch_size, num_heads, src:len, src_len)
         
@@ -240,11 +238,18 @@ class FairseqTransformerHub(GeneratorHubInterface):
         
         in_q = layer_inputs[f"models.0.{enc_dec_}.layers.{l}.{attn_module_}.q_proj"][0][0].transpose(0, 1)
         in_v = layer_inputs[f"models.0.{enc_dec_}.layers.{l}.{attn_module_}.v_proj"][0][0].transpose(0, 1)
+        in_res = layer_inputs[f"models.0.{enc_dec_}.layers.{l}.{attn_module_}_layer_norm"][0][0].transpose(0, 1)
 
         if "self_attn" in attn_module_:
-            residual_ = torch.einsum('sk,bsd->bskd', torch.eye(in_q.size(1)).to(b_o.device), in_q)
+            if pre_layer_norm:
+                residual_ = torch.einsum('sk,bsd->bskd', torch.eye(in_res.size(1)).to(in_res.device), in_res)
+            else:
+                residual_ = torch.einsum('sk,bsd->bskd', torch.eye(in_q.size(1)).to(in_res.device), in_q)
         else:
-            residual_ = in_q
+            if pre_layer_norm:
+                residual_ = in_res
+            else:
+                residual_ = in_q
 
         v = attn_module.v_proj(in_v)
         v = rearrange(
@@ -275,19 +280,42 @@ class FairseqTransformerHub(GeneratorHubInterface):
             out_qv_pre_ln = torch.cat((attn_v_wo,residual_.unsqueeze(-2)),dim=2)
         
         # Assert MHA output + residual is equal to pre-layernorm input
-        out_q_pre_ln = out_qv_pre_ln.sum(-2) + b_o
-        out_q_pre_ln_th = layer_inputs[f"models.0.{enc_dec_}.layers.{l}.{attn_module_}_layer_norm"][0][0].transpose(0, 1)
+        out_q_pre_ln = out_qv_pre_ln.sum(-2) +  b_o
+
+        if pre_layer_norm:
+            if 'encoder' in enc_dec_:
+                 # Encoder (delf-attention) -> final_layer_norm
+                out_q_pre_ln_th = layer_inputs[f"models.0.{enc_dec_}.layers.{l}.final_layer_norm"][0][0].transpose(0, 1)
+                
+            else:
+                if "self_attn" in attn_module_:
+                    # Self-attention decoder -> encoder_attn_layer_norm
+                    out_q_pre_ln_th = layer_inputs[f"models.0.{enc_dec_}.layers.{l}.encoder_attn_layer_norm"][0][0].transpose(0, 1)
+                else:
+                    # Cross-attention decoder -> final_layer_norm
+                    out_q_pre_ln_th = layer_inputs[f"models.0.{enc_dec_}.layers.{l}.final_layer_norm"][0][0].transpose(0, 1)
+                
+        else:
+            # In post-ln we compare with the input of the first layernorm
+            out_q_pre_ln_th = layer_inputs[f"models.0.{enc_dec_}.layers.{l}.{attn_module_}_layer_norm"][0][0].transpose(0, 1)
+
+        # print('out_q_pre_ln_th',out_q_pre_ln_th[0,0,:10])
+        # print('out_q_pre_ln',out_q_pre_ln[0,0,:10])
         assert torch.dist(out_q_pre_ln_th, out_q_pre_ln).item() < 1e-3 * out_q_pre_ln.numel()
+        
+        if pre_layer_norm:
+            transformed_vectors = out_qv_pre_ln
+            resultant = out_q_pre_ln
+        else:
+            ln_std_coef = 1/(out_q_pre_ln_th + eps_ln).std(-1).view(1,-1, 1).unsqueeze(-1) # (batch,src_len,1,1)
+            transformed_vectors = l_transform(out_qv_pre_ln, w_ln)*ln_std_coef # (batch,src_len,tgt_len,embed_dim)
+            dense_bias_term = l_transform(b_o, w_ln)*ln_std_coef # (batch,src_len,1,embed_dim)
+            attn_output = transformed_vectors.sum(dim=2) # (batch,seq_len,embed_dim)
+            resultant = attn_output + dense_bias_term.squeeze(2) + b_ln # (batch,seq_len,embed_dim)   
 
-        ln_std_coef = 1/(out_q_pre_ln_th + eps_ln).std(-1).view(1,-1, 1).unsqueeze(-1) # (batch,src_len,1,1)
-        transformed_vectors = l_transform(out_qv_pre_ln, w_ln)*ln_std_coef # (batch,src_len,tgt_len,embed_dim)
-        dense_bias_term = l_transform(b_o, w_ln)*ln_std_coef # (batch,src_len,1,embed_dim)
-        attn_output = transformed_vectors.sum(dim=2) # (batch,seq_len,embed_dim)
-        resultant = attn_output + dense_bias_term.squeeze(2) + b_ln # (batch,seq_len,embed_dim)   
-
-        # Assert resultant (decomposed attention block output) is equal to the real attention block output
-        out_q_th_2 = layer_outputs[f"models.0.{enc_dec_}.layers.{l}.{attn_module_}_layer_norm"][0].transpose(0, 1)
-        assert torch.dist(out_q_th_2, resultant).item() < 1e-3 * resultant.numel()
+            # Assert resultant (decomposed attention block output) is equal to the real attention block output
+            out_q_th_2 = layer_outputs[f"models.0.{enc_dec_}.layers.{l}.{attn_module_}_layer_norm"][0].transpose(0, 1)
+            assert torch.dist(out_q_th_2, resultant).item() < 1e-3 * resultant.numel()
 
         if contrib_type == 'l1':
             contributions = -F.pairwise_distance(transformed_vectors, resultant.unsqueeze(2), p=1)
@@ -299,7 +327,7 @@ class FairseqTransformerHub(GeneratorHubInterface):
 
         return contributions, resultants_norm
     
-    def get_contributions(self, src_tensor, tgt_tensor, contrib_type='l1', norm_mode='min_sum'):
+    def get_contributions(self, src_tensor, tgt_tensor, contrib_type='l1', norm_mode='min_sum', pre_layer_norm=False):
         r"""
         Get contributions for each ATTN_MODULE: 'encoder.self_attn', 'decoder.self_attn', 'decoder.encoder_attn.
         Args:
@@ -324,7 +352,8 @@ class FairseqTransformerHub(GeneratorHubInterface):
                 self.__get_contributions_module,
                 layer_inputs,
                 layer_outputs,
-                contrib_type
+                contrib_type,
+                pre_layer_norm
             )
 
         for attn in self.ATTN_MODULES:
@@ -343,7 +372,7 @@ class FairseqTransformerHub(GeneratorHubInterface):
         contributions_all = {k: torch.cat(v, dim=1) for k, v in contributions_all.items()}
         return contributions_all
 
-    def get_contribution_rollout(self, src_tensor, tgt_tensor, contrib_type='l1', norm_mode='min_sum', **contrib_kwargs):
+    def get_contribution_rollout(self, src_tensor, tgt_tensor, contrib_type='l1', norm_mode='min_sum', pre_layer_norm=False, **contrib_kwargs):
         # c = self.get_contributions(src_tensor, tgt_tensor, contrib_type, norm_mode, **contrib_kwargs)
         # if contrib_type == 'attn_w':
         #     c = {k: v.sum(2) for k, v in c.items()}
@@ -369,7 +398,7 @@ class FairseqTransformerHub(GeneratorHubInterface):
         enc_sa = 'encoder.self_attn'
 
         # Compute contributions rollout encoder self-attn
-        enc_self_attn_contributions = torch.squeeze(self.get_contributions(src_tensor, tgt_tensor, 'l1', norm_mode='min_sum')[enc_sa])
+        enc_self_attn_contributions = torch.squeeze(self.get_contributions(src_tensor, tgt_tensor, contrib_type, norm_mode=norm_mode, pre_layer_norm=pre_layer_norm)[enc_sa])
         layers, _, _ = enc_self_attn_contributions.size()
         enc_self_attn_contributions_mix = compute_joint_attention(enc_self_attn_contributions)
         c_roll[enc_sa] = enc_self_attn_contributions_mix
@@ -422,8 +451,8 @@ class FairseqTransformerHub(GeneratorHubInterface):
         dec_ed = 'decoder.encoder_attn'
         
         # Compute joint cross + self attention
-        self_dec_contributions = torch.squeeze(self.get_contributions(src_tensor, tgt_tensor, 'l1', norm_mode='min_sum')[dec_sa])
-        cross_contributions = torch.squeeze(self.get_contributions(src_tensor, tgt_tensor, 'l1', norm_mode='min_sum')[dec_ed])
+        self_dec_contributions = torch.squeeze(self.get_contributions(src_tensor, tgt_tensor, contrib_type, norm_mode=norm_mode, pre_layer_norm=pre_layer_norm)[dec_sa])
+        cross_contributions = torch.squeeze(self.get_contributions(src_tensor, tgt_tensor, contrib_type, norm_mode=norm_mode, pre_layer_norm=pre_layer_norm)[dec_ed])
         self_dec_contributions = (self_dec_contributions.transpose(1,2)*cross_contributions[:,:,-1].unsqueeze(1)).transpose(1,2)
         joint_self_cross_contributions = torch.cat((cross_contributions[:,:,:-1],self_dec_contributions),dim=-1)
 
@@ -432,104 +461,82 @@ class FairseqTransformerHub(GeneratorHubInterface):
 
         return c_roll
     
-    def viz_contributions(self, src_tensor, tgt_tensor, contrib_type, roll=False, attn=None, layer=None, head=None, **contrib_kwargs):
-        if roll:
-            contrib = self.get_contribution_rollout(src_tensor, tgt_tensor, contrib_type, **contrib_kwargs)
-        else:
-            contrib = self.get_contributions(src_tensor, tgt_tensor, contrib_type, **contrib_kwargs)
+    # def viz_contributions(self, src_tensor, tgt_tensor, contrib_type, roll=False, attn=None, layer=None, head=None, **contrib_kwargs):
+    #     if roll:
+    #         contrib = self.get_contribution_rollout(src_tensor, tgt_tensor, contrib_type, **contrib_kwargs)
+    #     else:
+    #         contrib = self.get_contributions(src_tensor, tgt_tensor, contrib_type, **contrib_kwargs)
         
-        src_tok = self.decode(src_tensor, self.task.src_dict)
-        tgt_tok = self.decode(tgt_tensor, self.task.tgt_dict)
+    #     src_tok = self.decode(src_tensor, self.task.src_dict)
+    #     tgt_tok = self.decode(tgt_tensor, self.task.tgt_dict)
         
-        def what_to_show(arg, valid_values):
-            valid_type = type(valid_values[0])
-            if arg is None:
-                to_show = valid_values
-            elif isinstance(arg, valid_type):
-                to_show = [arg]
-            elif isinstance(arg, list):
-                to_show = [a for a in arg if a in valid_values]
-            else:
-                raise TypeError("Argument must be str, List[str] or None")
+    #     def what_to_show(arg, valid_values):
+    #         valid_type = type(valid_values[0])
+    #         if arg is None:
+    #             to_show = valid_values
+    #         elif isinstance(arg, valid_type):
+    #             to_show = [arg]
+    #         elif isinstance(arg, list):
+    #             to_show = [a for a in arg if a in valid_values]
+    #         else:
+    #             raise TypeError("Argument must be str, List[str] or None")
 
-            return to_show
+    #         return to_show
         
-        def show_contrib_heatmap(data, k_tok, q_tok, title):
-            df = pd.DataFrame(
-                data=data,
-                columns=k_tok,
-                index=q_tok
-            )
+    #     def show_contrib_heatmap(data, k_tok, q_tok, title):
+    #         df = pd.DataFrame(
+    #             data=data,
+    #             columns=k_tok,
+    #             index=q_tok
+    #         )
 
-            fig, ax = plt.subplots()
-            g = sns.heatmap(df, cmap="Blues", cbar=True, square=True, ax=ax, fmt='.2f')
-            g.set_title(title)
-            g.set_xlabel("Key")
-            g.set_ylabel("Query")
-            g.set_xticklabels(g.get_xticklabels(), rotation=50, horizontalalignment='center',fontsize=10)
-            g.set_yticklabels(g.get_yticklabels(),fontsize=10);
+    #         fig, ax = plt.subplots()
+    #         g = sns.heatmap(df, cmap="Blues", cbar=True, square=True, ax=ax, fmt='.2f')
+    #         g.set_title(title)
+    #         g.set_xlabel("Key")
+    #         g.set_ylabel("Query")
+    #         g.set_xticklabels(g.get_xticklabels(), rotation=50, horizontalalignment='center',fontsize=10)
+    #         g.set_yticklabels(g.get_yticklabels(),fontsize=10);
 
-            fig.show()  
+    #         fig.show()  
 
-        for a in what_to_show(attn, self.ATTN_MODULES):
-            enc_dec_, _, attn_module_ = self.parse_module_name(a)
-            num_layers = self.get_module(enc_dec_).num_layers
-            if a == 'encoder.self_attn':
-                q_tok = src_tok + ['<EOS>']
-                k_tok = src_tok + ['<EOS>']
-            elif a == 'decoder.self_attn':
-                q_tok = tgt_tok + ['<EOS>']
-                k_tok = ['<EOS>'] + tgt_tok
-            elif a == 'decoder.encoder_attn':
-                q_tok = tgt_tok + ['<EOS>']
-                k_tok = src_tok + ['<EOS>']
-            else:
-                pass
+    #     for a in what_to_show(attn, self.ATTN_MODULES):
+    #         enc_dec_, _, attn_module_ = self.parse_module_name(a)
+    #         num_layers = self.get_module(enc_dec_).num_layers
+    #         if a == 'encoder.self_attn':
+    #             q_tok = src_tok + ['<EOS>']
+    #             k_tok = src_tok + ['<EOS>']
+    #         elif a == 'decoder.self_attn':
+    #             q_tok = tgt_tok + ['<EOS>']
+    #             k_tok = ['<EOS>'] + tgt_tok
+    #         elif a == 'decoder.encoder_attn':
+    #             q_tok = tgt_tok + ['<EOS>']
+    #             k_tok = src_tok + ['<EOS>']
+    #         else:
+    #             pass
             
-            #q_tok = (src_tok + ['<EOS>']) if a == 'encoder.self_attn' else (['<EOS>'] + tgt_tok)
-            #k_tok = (['<EOS>'] + tgt_tok) if a == 'decoder.self_attn' else (src_tok + ['<EOS>'])
+    #         #q_tok = (src_tok + ['<EOS>']) if a == 'encoder.self_attn' else (['<EOS>'] + tgt_tok)
+    #         #k_tok = (['<EOS>'] + tgt_tok) if a == 'decoder.self_attn' else (src_tok + ['<EOS>'])
 
-            for l in what_to_show(layer, list(range(num_layers))):
-                num_heads = self.get_module(a.replace('.', f'.{l}.')).num_heads
+    #         for l in what_to_show(layer, list(range(num_layers))):
+    #             num_heads = self.get_module(a.replace('.', f'.{l}.')).num_heads
                 
-                contrib_ = contrib[a][0,l]
+    #             contrib_ = contrib[a][0,l]
 
 
-                if contrib_type == 'attn_w' and roll == False:
-                    for h in what_to_show(head, [-1] + list(range(num_heads))):
-                        contrib__ = contrib_.mean(0) if h == -1 else contrib_[h]
-                        show_contrib_heatmap(
-                            contrib__.cpu().detach().numpy(), #3
-                            k_tok,
-                            q_tok,
-                            title=f"{contrib_type}; {a}; layer: {l}; head: {'mean' if h == -1 else h}"
-                        )
-                else:
-                    show_contrib_heatmap(
-                        contrib_.cpu().detach().numpy(),
-                        k_tok,
-                        q_tok,
-                        title=f"{contrib_type}; {a}; layer: {l}"
-                    )
-
-def parse_single_alignment(string, reverse=False, one_add=False, one_indexed=False):
-    """
-    Given an alignment (as a string such as "3-2" or "5p4"), return the index pair.
-    """
-    assert '-' in string or 'p' in string
-
-    a, b = string.replace('p', '-').split('-')
-    a, b = int(a), int(b)
-
-    if one_indexed:
-        a = a - 1
-        b = b - 1
-    
-    if one_add:
-        a = a + 1
-        b = b + 1
-
-    if reverse:
-        a, b = b, a
-
-    return a, b
+    #             if contrib_type == 'attn_w' and roll == False:
+    #                 for h in what_to_show(head, [-1] + list(range(num_heads))):
+    #                     contrib__ = contrib_.mean(0) if h == -1 else contrib_[h]
+    #                     show_contrib_heatmap(
+    #                         contrib__.cpu().detach().numpy(), #3
+    #                         k_tok,
+    #                         q_tok,
+    #                         title=f"{contrib_type}; {a}; layer: {l}; head: {'mean' if h == -1 else h}"
+    #                     )
+    #             else:
+    #                 show_contrib_heatmap(
+    #                     contrib_.cpu().detach().numpy(),
+    #                     k_tok,
+    #                     q_tok,
+    #                     title=f"{contrib_type}; {a}; layer: {l}"
+    #                 )

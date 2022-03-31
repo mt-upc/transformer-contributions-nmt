@@ -31,16 +31,16 @@ def get_word_word_attention(token_token_attention, src_word_to_bpe, trg_word_to_
 
     return word_word_attention
 
-def convert_bpe_word(bpe_sent, word_sent):
+def convert_bpe_word(splited_bpe_sent, splited_word_sent):
     """
     Given a sentence made of BPE subwords and words (as a string), 
     returns a list of lists where each sub-list contains BPE subwords
     for the correponding word.
     """
 
-    splited_bpe_sent = bpe_sent.split()
-    word_sent = word_sent.split()
-    word_to_bpe = [[] for _ in range(len(word_sent))]
+    #splited_bpe_sent = bpe_sent.split()
+    #splited_word_sent = splited_word_sent.split()
+    word_to_bpe = [[] for _ in range(len(splited_word_sent))]
 
     
     word_i = 0
@@ -51,6 +51,7 @@ def convert_bpe_word(bpe_sent, word_sent):
         # else:
         if token.startswith("▁"):
             word_i += 1
+            
         word_to_bpe[word_i].append(bpe_i)
     
     for word in word_to_bpe:

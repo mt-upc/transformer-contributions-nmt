@@ -61,10 +61,55 @@ class FairseqTransformerHub(GeneratorHubInterface):
         tgt_tensor = self.task.dataset(split)[index]['target']
         tgt_tok = self.decode(tgt_tensor, self.task.tgt_dict)
         tgt_sent = self.decode(tgt_tensor, self.task.tgt_dict, as_string=True)
-        
-    
+
         return src_sent, src_tok, src_tensor, tgt_sent, tgt_tok, tgt_tensor
-   
+
+
+    def get_interactive_sample(self, i, test_set_dir, src, tgt, tokenizer, hallucination=False):
+        """Get interactive sample from tokenized and original word files."""
+
+        test_src_bpe = f'{test_set_dir}/test.{tokenizer}.{src}'
+        test_tgt_bpe = f'{test_set_dir}/test.{tokenizer}.{tgt}'
+        test_src_word = f'{test_set_dir}/test.{src}'
+        test_tgt_word = f'{test_set_dir}/test.{tgt}'
+
+        # test_src_word = europarl_dir / "data_in_progress/test.uc.de"
+        # test_tgt_word = europarl_dir / "data_in_progress/test.uc.en"
+
+        with open(test_src_bpe, encoding="utf-8") as fbpe:
+            # BPE source sentences
+            src_bpe_sents = fbpe.readlines()
+        with open(test_tgt_bpe, encoding="utf-8") as fbpe:
+            # BPE target sentences
+            tgt_bpe_sents = fbpe.readlines()
+        with open(test_src_word, encoding="utf-8") as fword:
+            # Original source sentences
+            src_word_sents = fword.readlines()
+        with open(test_tgt_word, encoding="utf-8") as fword:
+            # Original target sentences
+            tgt_word_sents = fword.readlines()
+
+        src_tok_str = src_bpe_sents[i].strip() # removes leading and trailing whitespaces
+        src_tok = src_tok_str.split()
+
+        if hallucination:
+            src_tok = ['nicht'] + ['▁'+ src_tok[0]] + src_tok[1:]
+
+        eos_id = self.task.tgt_dict.eos_index # EOS token index
+
+        tgt_tok_str = tgt_bpe_sents[i].strip() # removes leading and trailing whitespaces
+        tgt_tok = tgt_tok_str.split()
+        src_tensor = torch.tensor([self.src_dict.index(t) for t in src_tok] + [eos_id])
+        tgt_tensor = torch.tensor([eos_id] + [self.tgt_dict.index(t) for t in tgt_tok])
+
+        if test_src_word and test_tgt_word:
+            src_word_sent = src_word_sents[i]
+            tgt_word_sent = tgt_word_sents[i]
+            return src_word_sent, src_tok, src_tok_str, src_tensor, tgt_word_sent, tgt_tok, tgt_tok_str, tgt_tensor
+
+        return None, src_tok, src_tok_str, src_tensor, None, tgt_tok, tgt_tok_str, tgt_tensor
+            
+       
     def parse_module_name(self, module_name):
         """ Returns (enc_dec, layer, module)"""
         parsed_module_name = module_name.split('.')
@@ -119,31 +164,32 @@ class FairseqTransformerHub(GeneratorHubInterface):
             layer_outputs:
                 dictionary with the input of the modeules of the model.
         """
-        self.zero_grad()
+        #self.zero_grad()
+        with torch.no_grad():
 
-        layer_inputs = defaultdict(list)
-        layer_outputs = defaultdict(list)
+            layer_inputs = defaultdict(list)
+            layer_outputs = defaultdict(list)
 
-        def save_activation(name, mod, inp, out):
-            layer_inputs[name].append(inp)
-            layer_outputs[name].append(out)
+            def save_activation(name, mod, inp, out):
+                layer_inputs[name].append(inp)
+                layer_outputs[name].append(out)
 
-        handles = {}
+            handles = {}
 
-        for name, layer in self.named_modules():
-            handles[name] = layer.register_forward_hook(partial(save_activation, name))
-        
-        src_tensor = src_tensor.unsqueeze(0).to(self.device)
-        tgt_tensor = tgt_tensor.unsqueeze(0).to(self.device)
+            for name, layer in self.named_modules():
+                handles[name] = layer.register_forward_hook(partial(save_activation, name))
+            
+            src_tensor = src_tensor.unsqueeze(0).to(self.device)
+            tgt_tensor = tgt_tensor.unsqueeze(0).to(self.device)
 
-        model_output, encoder_out = self.models[0](src_tensor, src_tensor.size(-1), tgt_tensor, )
+            model_output, encoder_out = self.models[0](src_tensor, src_tensor.size(-1), tgt_tensor, )
 
-        log_probs = self.models[0].get_normalized_probs(model_output, log_probs=True, sample=None)
-        
-        for k, v in handles.items():
-            handles[k].remove()
-        
-        return model_output, log_probs, encoder_out, layer_inputs, layer_outputs
+            log_probs = self.models[0].get_normalized_probs(model_output, log_probs=True, sample=None)
+            
+            for k, v in handles.items():
+                handles[k].remove()
+            
+            return model_output, log_probs, encoder_out, layer_inputs, layer_outputs
 
     def normalize_contrib(self, x, mode=None, temperature=0.5, resultant_norm=None):
         """ Normalization applied to each row of the layer-wise contributions."""
@@ -239,6 +285,7 @@ class FairseqTransformerHub(GeneratorHubInterface):
         in_q = layer_inputs[f"models.0.{enc_dec_}.layers.{l}.{attn_module_}.q_proj"][0][0].transpose(0, 1)
         in_v = layer_inputs[f"models.0.{enc_dec_}.layers.{l}.{attn_module_}.v_proj"][0][0].transpose(0, 1)
         in_res = layer_inputs[f"models.0.{enc_dec_}.layers.{l}.{attn_module_}_layer_norm"][0][0].transpose(0, 1)
+ 
 
         if "self_attn" in attn_module_:
             if pre_layer_norm:
@@ -282,6 +329,7 @@ class FairseqTransformerHub(GeneratorHubInterface):
         # Assert MHA output + residual is equal to pre-layernorm input
         out_q_pre_ln = out_qv_pre_ln.sum(-2) +  b_o
 
+
         if pre_layer_norm:
             if 'encoder' in enc_dec_:
                  # Encoder (delf-attention) -> final_layer_norm
@@ -322,6 +370,10 @@ class FairseqTransformerHub(GeneratorHubInterface):
             resultants_norm = torch.norm(torch.squeeze(resultant),p=1,dim=-1)
         elif contrib_type == 'l2':
             contributions = -F.pairwise_distance(transformed_vectors, resultant.unsqueeze(2), p=2)
+            resultants_norm = torch.norm(torch.squeeze(resultant),p=2,dim=-1)
+        elif contrib_type == 'koba':
+            contributions = torch.norm(transformed_vectors, p=2, dim=-1)
+            return contributions, None
         else:
             raise ArgumentError(f"contribution_type '{contrib_type}' unknown")
 
@@ -331,16 +383,16 @@ class FairseqTransformerHub(GeneratorHubInterface):
         r"""
         Get contributions for each ATTN_MODULE: 'encoder.self_attn', 'decoder.self_attn', 'decoder.encoder_attn.
         Args:
-            src_tensor (`tensor` ()):
+            src_tensor ('tensor' ()):
                 Source sentence tensor.
-            tgt_tensor (`tensor` ()):
+            tgt_tensor ('tensor' ()):
                 Target sentence tensor (teacher forcing).
-            contrib_type (`str`, defaults to `l1` (Ferrando et al ., 2022)):
-                Type of layer-wise contribution measure: l1, l2, or attn_w.
-            norm_mode ('str', defaults to `min_sum` (Ferrando et al ., 2022)):
+            contrib_type ('str', defaults to 'l1' (Ferrando et al ., 2022)):
+                Type of layer-wise contribution measure: 'l1', 'l2', 'koba' (Kobayashi et al ., 2021) or 'attn_w'.
+            norm_mode ('str', defaults to 'min_sum' (Ferrando et al ., 2022)):
                 Type of normalization applied to layer-wise contributions: 'min_sum', 'min_max', 'sum_one', 'softmax'.
         Returns:
-            Dictionary with ATTN_MODULE as keys, and tensor with contributions (batch_size, num_layers, src_len, tgt_len) as values.
+            Dictionary with elements in ATTN_MODULE as keys, and tensor with contributions (batch_size, num_layers, src_len, tgt_len) as values.
         """
         contributions_all = defaultdict(list)
         _, _, _, layer_inputs, layer_outputs = self.trace_forward(src_tensor, tgt_tensor)
@@ -361,7 +413,14 @@ class FairseqTransformerHub(GeneratorHubInterface):
             enc_dec = self.get_module(enc_dec_)
 
             for l in range(len(enc_dec.layers)):
-                contributions, resultant_norms = f(attn.replace('.', f'.{l}.'))
+                if contrib_type == 'attn_w':
+                    contributions = f(attn.replace('.', f'.{l}.'))
+                    resultant_norms = None
+                    contributions = contributions.sum(1)
+                    if norm_mode != 'sum_one':
+                        print('Please change the normalization mode to sum one')
+                else:
+                    contributions, resultant_norms = f(attn.replace('.', f'.{l}.'))
                 contributions = self.normalize_contrib(contributions, norm_mode, resultant_norm=resultant_norms).unsqueeze(1)
                 # Mask upper triangle of decoder self-attention matrix (and normalize)
                 # if attn == 'decoder.self_attn':
@@ -382,15 +441,17 @@ class FairseqTransformerHub(GeneratorHubInterface):
         def compute_joint_attention(att_mat):
             """ Compute attention rollout given contributions or attn weights + residual."""
 
-            aug_att_mat =  att_mat
-            device = att_mat.device
-            joint_attentions = torch.zeros(aug_att_mat.size()).to(device)
+            joint_attentions = torch.zeros(att_mat.size()).to(att_mat.device)
 
             layers = joint_attentions.shape[0]
-            joint_attentions[0] = aug_att_mat[0]
-            
+
+            joint_attentions = att_mat[0].unsqueeze(0)
+
             for i in range(1,layers):
-                joint_attentions[i] = torch.matmul(aug_att_mat[i],joint_attentions[i-1])
+
+                C_roll_new = torch.matmul(att_mat[i],joint_attentions[i-1])
+
+                joint_attentions = torch.cat([joint_attentions, C_roll_new.unsqueeze(0)], dim=0)
                 
             return joint_attentions
 
@@ -457,7 +518,10 @@ class FairseqTransformerHub(GeneratorHubInterface):
         joint_self_cross_contributions = torch.cat((cross_contributions[:,:,:-1],self_dec_contributions),dim=-1)
 
         contributions_full_rollout = rollout(joint_self_cross_contributions, relevances_enc_self_attn[-1])
+
         c_roll['total'] = contributions_full_rollout
+        c_roll[dec_ed] = cross_contributions
+        c_roll[enc_sa] = relevances_enc_self_attn
 
         return c_roll
     

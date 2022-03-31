@@ -10,7 +10,13 @@ from omegaconf import open_dict
 from fairseq import utils
 logger = logging.getLogger(__name__)
 
-
+from fairseq.data.multilingual.multilingual_utils import (
+    EncoderLangtok,
+    LangTokSpec,
+    LangTokStyle,
+    augment_dictionary,
+    get_lang_tok,
+)
 
 
 import pandas as pd
@@ -66,6 +72,7 @@ class FairseqMultilingualTransformerHub(FairseqTransformerHub):
 
         # Adding EOS token to beggining of target sentence
         tgt_tensor = self.task.dataset(split)[index]['target']
+        #dataset=task.datasets[split + ':' + langdir],
         tgt_tensor = torch.cat([torch.tensor([self.task.target_dictionary.eos_index]),
                                 tgt_tensor[:-1]
                                 ]).to(tgt_tensor.device)
@@ -73,6 +80,57 @@ class FairseqMultilingualTransformerHub(FairseqTransformerHub):
         tgt_sent = self.decode(tgt_tensor, self.task.target_dictionary, as_string=True)
 
         return src_sent, src_tok, src_tensor, tgt_sent, tgt_tok, tgt_tensor
+
+    def get_interactive_sample(self, i, test_set_dir, src, tgt, tokenizer):
+        """Get interactive sample from tokenized and original word files."""
+
+        test_src_bpe = f'{test_set_dir}/test.{tokenizer}.{src}'
+        test_tgt_bpe = f'{test_set_dir}/test.{tokenizer}.{tgt}'
+        test_src_word = f'{test_set_dir}/test.{src}'
+        test_tgt_word = f'{test_set_dir}/test.{tgt}'
+
+        with open(test_src_bpe, encoding="utf-8") as fbpe:
+            # BPE source sentences
+            src_bpe_sents = fbpe.readlines()
+        with open(test_tgt_bpe, encoding="utf-8") as fbpe:
+            # BPE target sentences
+            tgt_bpe_sents = fbpe.readlines()
+        with open(test_src_word, encoding="utf-8") as fword:
+            # Original source sentences
+            src_word_sents = fword.readlines()
+        with open(test_tgt_word, encoding="utf-8") as fword:
+            # Original target sentences
+            tgt_word_sents = fword.readlines()
+
+        src_word_sent = src_word_sents[i]
+        tgt_word_sent = tgt_word_sents[i]
+
+        src_tok_str = src_bpe_sents[i].strip() # removes leading and trailing whitespaces
+        src_tok = src_tok_str.split()
+
+        tgt_tok_str = tgt_bpe_sents[i].strip() # removes leading and trailing whitespaces
+        tgt_tok = tgt_tok_str.split()
+
+        # M2M generate has --decoder-langtok --encoder-langtok src
+        # adds source language token to the source sentence
+        # adds target language token to the target sentence
+        src_lan_token = get_lang_tok(lang=self.task.source_langs[0], lang_tok_style=LangTokStyle.multilingual.value)
+        tgt_lan_token = get_lang_tok(lang=self.task.target_langs[0], lang_tok_style=LangTokStyle.multilingual.value)
+        idx_src_lan_token = self.task.source_dictionary.index(src_lan_token)
+        idx_tgt_lan_token = self.task.target_dictionary.index(tgt_lan_token)
+
+        src_tok = [src_lan_token] + src_tok + [self.task.source_dictionary[self.task.source_dictionary.eos_index]]
+        tgt_tok = [self.task.target_dictionary[self.task.target_dictionary.eos_index]] + [tgt_lan_token] + tgt_tok
+
+        src_tensor = torch.tensor([self.task.source_dictionary.index(s) for s in src_tok])
+        tgt_tensor = torch.tensor([self.task.target_dictionary.index(t) for t in tgt_tok])
+
+        if test_src_word and test_tgt_word:
+            src_word_sent = src_word_sents[i]
+            tgt_word_sent = tgt_word_sents[i]
+            return src_word_sent, src_tok, src_tok_str, src_tensor, tgt_word_sent, tgt_tok, tgt_tok_str, tgt_tensor
+
+        return None, src_tok, src_tok_str, src_tensor, None, tgt_tok, tgt_tok_str, tgt_tensor
 
     def trace_forward(self, src_tensor, tgt_tensor):
         r"""Forward-pass through the model.

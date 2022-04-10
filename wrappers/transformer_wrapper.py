@@ -281,10 +281,18 @@ class FairseqTransformerHub(GeneratorHubInterface):
         w_ln = ln.weight.data
         b_ln = ln.bias
         eps_ln = ln.eps
+
+        ## LN2
+        ln2 = self.get_module(f'{enc_dec_}.{l}.final_layer_norm')
+        w_ln2 = ln.weight.data
+        b_ln2 = ln.bias
+        eps_ln2 = ln.eps
         
         in_q = layer_inputs[f"models.0.{enc_dec_}.layers.{l}.{attn_module_}.q_proj"][0][0].transpose(0, 1)
         in_v = layer_inputs[f"models.0.{enc_dec_}.layers.{l}.{attn_module_}.v_proj"][0][0].transpose(0, 1)
         in_res = layer_inputs[f"models.0.{enc_dec_}.layers.{l}.{attn_module_}_layer_norm"][0][0].transpose(0, 1)
+        ##
+        in_res2 = layer_inputs[f"models.0.{enc_dec_}.layers.{l}.final_layer_norm"][0][0].transpose(0, 1)
  
 
         if "self_attn" in attn_module_:
@@ -346,7 +354,8 @@ class FairseqTransformerHub(GeneratorHubInterface):
         else:
             # In post-ln we compare with the input of the first layernorm
             out_q_pre_ln_th = layer_inputs[f"models.0.{enc_dec_}.layers.{l}.{attn_module_}_layer_norm"][0][0].transpose(0, 1)
-
+        
+        # print('attn_module_', attn_module_)
         # print('out_q_pre_ln_th',out_q_pre_ln_th[0,0,:10])
         # print('out_q_pre_ln',out_q_pre_ln[0,0,:10])
         assert torch.dist(out_q_pre_ln_th, out_q_pre_ln).item() < 1e-3 * out_q_pre_ln.numel()
@@ -359,18 +368,36 @@ class FairseqTransformerHub(GeneratorHubInterface):
             transformed_vectors = l_transform(out_qv_pre_ln, w_ln)*ln_std_coef # (batch,src_len,tgt_len,embed_dim)
             dense_bias_term = l_transform(b_o, w_ln)*ln_std_coef # (batch,src_len,1,embed_dim)
             attn_output = transformed_vectors.sum(dim=2) # (batch,seq_len,embed_dim)
-            resultant = attn_output + dense_bias_term.squeeze(2) + b_ln # (batch,seq_len,embed_dim)   
+            resultant = attn_output + dense_bias_term.squeeze(2) + b_ln # (batch,seq_len,embed_dim)
+            #print('resultant1', resultant.size())
 
             # Assert resultant (decomposed attention block output) is equal to the real attention block output
             out_q_th_2 = layer_outputs[f"models.0.{enc_dec_}.layers.{l}.{attn_module_}_layer_norm"][0].transpose(0, 1)
             assert torch.dist(out_q_th_2, resultant).item() < 1e-3 * resultant.numel()
 
+        ####
+        # if 'encoder' in enc_dec_:
+        #     ln2_std_coef = 1/(in_res2 + eps_ln2).std(-1).view(1,-1, 1).unsqueeze(-1) # (batch,src_len,1,1)
+        #     transformed_vectors = l_transform(transformed_vectors, w_ln2)*ln2_std_coef # (batch,src_len,tgt_len,embed_dim)
+        #     dense_bias_term2 = l_transform(dense_bias_term, w_ln2)*ln2_std_coef # (batch,src_len,1,embed_dim)
+        #     #resultant = layer_outputs[f"models.0.{enc_dec_}.layers.{l}.final_layer_norm"][0].transpose(0, 1)
+        #     transformed_ln_bias = l_transform(b_ln, w_ln2)
+        #     attn_output = transformed_vectors.sum(dim=2) # (batch,seq_len,embed_dim)
+        #     #resultant = attn_output + dense_bias_term2.squeeze(2) + transformed_ln_bias # (batch,seq_len,embed_dim)
+        #     resultant = layer_outputs[f"models.0.{enc_dec_}.layers.{l}.final_layer_norm"][0].transpose(0, 1)
+        #     #print('resultant2', resultant.size())
+
+
         if contrib_type == 'l1':
             contributions = -F.pairwise_distance(transformed_vectors, resultant.unsqueeze(2), p=1)
+            #print(contributions)
             resultants_norm = torch.norm(torch.squeeze(resultant),p=1,dim=-1)
+            #resultants_norm=None
+            #print('resultants_norm',resultants_norm)
         elif contrib_type == 'l2':
             contributions = -F.pairwise_distance(transformed_vectors, resultant.unsqueeze(2), p=2)
             resultants_norm = torch.norm(torch.squeeze(resultant),p=2,dim=-1)
+            #resultants_norm=None
         elif contrib_type == 'koba':
             contributions = torch.norm(transformed_vectors, p=2, dim=-1)
             return contributions, None

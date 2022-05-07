@@ -17,6 +17,7 @@ from einops import rearrange
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+
 rc={'font.size': 12, 'axes.labelsize': 10, 'legend.fontsize': 10.0,
     'axes.titlesize': 24, 'xtick.labelsize': 24, 'ytick.labelsize': 24,
     'axes.linewidth': .5, 'figure.figsize': (12,12)}
@@ -62,8 +63,12 @@ class FairseqTransformerHub(GeneratorHubInterface):
         tgt_tok = self.decode(tgt_tensor, self.task.tgt_dict)
         tgt_sent = self.decode(tgt_tensor, self.task.tgt_dict, as_string=True)
 
-        return src_sent, src_tok, src_tensor, tgt_sent, tgt_tok, tgt_tensor
-
+        return {
+                'src_tok': src_tok,
+                'src_tensor': src_tensor,
+                'tgt_tok': tgt_tok,
+                'tgt_tensor': tgt_tensor
+            }
 
     def get_interactive_sample(self, i, test_set_dir, src, tgt, tokenizer, hallucination=False):
         """Get interactive sample from tokenized and original word files."""
@@ -92,22 +97,45 @@ class FairseqTransformerHub(GeneratorHubInterface):
         src_tok_str = src_bpe_sents[i].strip() # removes leading and trailing whitespaces
         src_tok = src_tok_str.split()
 
-        if hallucination:
-            src_tok = ['nicht'] + ['▁'+ src_tok[0]] + src_tok[1:]
+        
 
         eos_id = self.task.tgt_dict.eos_index # EOS token index
 
         tgt_tok_str = tgt_bpe_sents[i].strip() # removes leading and trailing whitespaces
         tgt_tok = tgt_tok_str.split()
+        if hallucination:
+            #src_tok = ['<pad>'] + ['▁'+ src_tok[0]] + src_tok[1:]
+            tgt_tok = ['<pad>'] + ['▁'+ tgt_tok[0]] + tgt_tok[1:]
         src_tensor = torch.tensor([self.src_dict.index(t) for t in src_tok] + [eos_id])
         tgt_tensor = torch.tensor([eos_id] + [self.tgt_dict.index(t) for t in tgt_tok])
 
         if test_src_word and test_tgt_word:
             src_word_sent = src_word_sents[i]
             tgt_word_sent = tgt_word_sents[i]
-            return src_word_sent, src_tok, src_tok_str, src_tensor, tgt_word_sent, tgt_tok, tgt_tok_str, tgt_tensor
 
-        return None, src_tok, src_tok_str, src_tensor, None, tgt_tok, tgt_tok_str, tgt_tensor
+            return {
+                'src_word_sent': src_word_sent,
+                'src_tok': src_tok,
+                'src_tok_str': src_tok_str,
+                'src_tensor': src_tensor,
+                'tgt_word_sent': tgt_word_sent,
+                'tgt_tok': tgt_tok,
+                'tgt_tok_str': tgt_tok_str,
+                'tgt_tensor': tgt_tensor
+            }
+
+        return {
+            'src_word_sent': None,
+            'src_tok': src_tok,
+            'src_tok_str': src_tok_str,
+            'src_tensor': src_tensor,
+            'tgt_word_sent': None,
+            'tgt_tok': tgt_tok,
+            'tgt_tok_str': tgt_tok_str,
+            'tgt_tensor': tgt_tensor
+        }
+
+        #return None, src_tok, src_tok_str, src_tensor, None, tgt_tok, tgt_tok_str, tgt_tensor
             
        
     def parse_module_name(self, module_name):
@@ -489,11 +517,11 @@ class FairseqTransformerHub(GeneratorHubInterface):
         enc_self_attn_contributions = torch.squeeze(self.get_contributions(src_tensor, tgt_tensor, contrib_type, norm_mode=norm_mode, pre_layer_norm=pre_layer_norm)[enc_sa])
         layers, _, _ = enc_self_attn_contributions.size()
         enc_self_attn_contributions_mix = compute_joint_attention(enc_self_attn_contributions)
-        c_roll[enc_sa] = enc_self_attn_contributions_mix
+        c_roll[enc_sa] = enc_self_attn_contributions_mix.detach().clone()
+        # repeat num_layers times
 
         # Get last layer relevances w.r.t input
         relevances_enc_self_attn = enc_self_attn_contributions_mix[-1]
-        # repeat num_layers times
         relevances_enc_self_attn = relevances_enc_self_attn.unsqueeze(0).repeat(layers, 1, 1)
             
         def rollout(C, C_enc_out):
@@ -548,7 +576,7 @@ class FairseqTransformerHub(GeneratorHubInterface):
 
         c_roll['total'] = contributions_full_rollout
         c_roll[dec_ed] = cross_contributions
-        c_roll[enc_sa] = relevances_enc_self_attn
+        #c_roll[enc_sa] = relevances_enc_self_attn
 
         return c_roll
     

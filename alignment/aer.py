@@ -47,9 +47,15 @@ class aer():
 
             src_word_sent, src_tok, src_tok_str, src_tensor, tgt_word_sent, tgt_tok, tgt_tok_str, tgt_tensor = hub.get_interactive_sample(i, self.test_set_dir, self.src, self.tgt, self.tokenizer)
             
+            # if contrib_type == 'attn_w':
+            #     norm_mode = 'sum_one'
+            # else:
+            #     norm_mode = 'min_sum'
+
+            norm_mode = 'min_sum'
 
             alti_model = hub.get_contribution_rollout(src_tensor, tgt_tensor, contrib_type,
-                                                        norm_mode='min_sum',pre_layer_norm=pre_layer_norm)
+                                                        norm_mode=norm_mode,pre_layer_norm=pre_layer_norm)
 
             # Cross-attention
             cross_attn_contributions = alti_model['decoder.encoder_attn'].detach()                          
@@ -63,7 +69,12 @@ class aer():
             total_alti = alti_model['total'].detach()
             total_alti_pred_src = total_alti[:,:,:src_tensor.size(0)] # source sentence + </s>
 
-            extract_matrix.append({"alti":total_alti_pred_src, "decoder.encoder_attn": cross_attn_contributions, "alti_enc_cross_attn": combined_alti_enc_cross})
+            # Attention weights
+            alti_model_attn_w = torch.squeeze(hub.get_contributions(src_tensor, tgt_tensor, contrib_type='attn_w',
+                                                        norm_mode='sum_one',pre_layer_norm=pre_layer_norm)['decoder.encoder_attn']).detach()
+
+            extract_matrix.append({"alti":total_alti_pred_src, "decoder.encoder_attn": cross_attn_contributions,
+                                    "alti_enc_cross_attn": combined_alti_enc_cross, "attn_w":alti_model_attn_w})
 
         
         store_filename = f'./results/alignments/{model_name_save}/extracted_matrix.pkl'
@@ -96,6 +107,7 @@ class aer():
 
         for setting in ['AWO', 'AWI']:
             for mode in self.mode_list:
+                print(mode)
                 for l in range(self.num_layers):
                     with open(f'./results/alignments/{self.model_name_save}/hypothesis_{l}_{mode}_{setting}', 'w') as f:
                         for i in range(len(src_bpe_sents)):#len(src_bpe_sents)
@@ -121,7 +133,8 @@ class aer():
                             src_len = len(src_word_sent.split())
                             tgt_word_to_bpe = align.convert_bpe_word(splited_tgt_bpe_sent, splited_tgt_word_sent)
                             
-                            contrib_matrix = torch.squeeze(extract_matrix[i][mode][l]).detach().cpu().numpy()  
+                            contrib_matrix = torch.squeeze(extract_matrix[i][mode][l]).detach().cpu().numpy()
+                            #print(contrib_matrix.shape)
                                 
                             if setting == "AWI":
                                 contrib_matrix = contrib_matrix[list(range(1,len(contrib_matrix)))+[0]]
@@ -141,7 +154,7 @@ class aer():
                                     contrib_matrix[-1,:] = float('-inf')
                                     contrib_matrix[-1,-2] = float('+inf')
                             
-                            contrib_matrix[:,-1] = float('-inf')
+                            #contrib_matrix[:,-1] = float('-inf')
                             
                             contrib_argmax = np.argmax(contrib_matrix, -1)
 

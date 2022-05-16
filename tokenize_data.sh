@@ -12,6 +12,7 @@ export PATH=~/anaconda3/bin:$PATH
 export M2M_CKPT_DIR=/home/usuaris/scratch/javier.ferrando/checkpoints/m2m_100
 export M2M_DATA_DIR=/home/usuaris/scratch/javier.ferrando/datasets/m2m_data
 export EUROPARL_DATA_DIR=/home/usuaris/veu/javier.ferrando/norm-analysis-of-transformer/exp2_nmt/work
+export IWSLT14_DATA_DIR=/home/usuaris/scratch/javier.ferrando/datasets/iwslt14
 
 source activate int_nmt
 
@@ -25,17 +26,20 @@ do
     python $HOME/fairseq/scripts/spm_encode.py \
         --model $M2M_CKPT_DIR/spm.128k.model \
         --output_format=piece \
-        --inputs=$EUROPARL_DATA_DIR/processed_data/test.$lang \
-        --outputs=$M2M_DATA_DIR/spm.$src.$tgt.$lang
+        --inputs=$IWSLT14_DATA_DIR/tokenized/test.$lang \
+        --outputs=$IWSLT14_DATA_DIR/tokenized_m2m/test.spm.$lang
 done
 
-cd M2M_DATA_DIR
+# --inputs=$EUROPARL_DATA_DIR/processed_data/test.$lang \
+# --outputs=$M2M_DATA_DIR/spm.$src.$tgt.$lang
 
-pwd
+# cd M2M_DATA_DIR
 
-fairseq-preprocess \
-    --source-lang $src --target-lang $tgt \
-    --testpref $M2M_DATA_DIR/spm.$src.$tgt \
-    --thresholdsrc 0 --thresholdtgt 0 \
-    --destdir $M2M_DATA_DIR/data_bin \
-    --srcdict $M2M_CKPT_DIR/data_dict.128k.txt --tgtdict $M2M_CKPT_DIR/data_dict.128k.txt
+# pwd
+
+# fairseq-preprocess \
+#     --source-lang $src --target-lang $tgt \
+#     --testpref $M2M_DATA_DIR/spm.$src.$tgt \
+#     --thresholdsrc 0 --thresholdtgt 0 \
+#     --destdir $M2M_DATA_DIR/data_bin \
+#     --srcdict $M2M_CKPT_DIR/data_dict.128k.txt --tgtdict $M2M_CKPT_DIR/data_dict.128k.txt

@@ -81,7 +81,7 @@ class FairseqMultilingualTransformerHub(FairseqTransformerHub):
 
         return src_sent, src_tok, src_tensor, tgt_sent, tgt_tok, tgt_tensor
 
-    def get_interactive_sample(self, i, test_set_dir, src, tgt, tokenizer):
+    def get_interactive_sample(self, i, test_set_dir, src, tgt, tokenizer, hallucination=None):
         """Get interactive sample from tokenized and original word files."""
 
         test_src_bpe = f'{test_set_dir}/test.{tokenizer}.{src}'
@@ -119,7 +119,11 @@ class FairseqMultilingualTransformerHub(FairseqTransformerHub):
         idx_src_lan_token = self.task.source_dictionary.index(src_lan_token)
         idx_tgt_lan_token = self.task.target_dictionary.index(tgt_lan_token)
 
-        src_tok = [src_lan_token] + src_tok + [self.task.source_dictionary[self.task.source_dictionary.eos_index]]
+         # Add token to beginning of source sentence
+        if hallucination is not None:
+            src_tok = [src_lan_token] + [hallucination] + src_tok + [self.task.source_dictionary[self.task.source_dictionary.eos_index]]
+        else:
+            src_tok = [src_lan_token] + src_tok + [self.task.source_dictionary[self.task.source_dictionary.eos_index]]
         tgt_tok = [self.task.target_dictionary[self.task.target_dictionary.eos_index]] + [tgt_lan_token] + tgt_tok
 
         src_tensor = torch.tensor([self.task.source_dictionary.index(s) for s in src_tok])
@@ -128,9 +132,29 @@ class FairseqMultilingualTransformerHub(FairseqTransformerHub):
         if test_src_word and test_tgt_word:
             src_word_sent = src_word_sents[i]
             tgt_word_sent = tgt_word_sents[i]
-            return src_word_sent, src_tok, src_tok_str, src_tensor, tgt_word_sent, tgt_tok, tgt_tok_str, tgt_tensor
+            return {
+                'src_word_sent': src_word_sent,
+                'src_tok': src_tok,
+                'src_tok_str': src_tok_str,
+                'src_tensor': src_tensor,
+                'tgt_word_sent': tgt_word_sent,
+                'tgt_tok': tgt_tok,
+                'tgt_tok_str': tgt_tok_str,
+                'tgt_tensor': tgt_tensor
+            }
+            #return src_word_sent, src_tok, src_tok_str, src_tensor, tgt_word_sent, tgt_tok, tgt_tok_str, tgt_tensor
 
-        return None, src_tok, src_tok_str, src_tensor, None, tgt_tok, tgt_tok_str, tgt_tensor
+        return {
+            'src_word_sent': None,
+            'src_tok': src_tok,
+            'src_tok_str': src_tok_str,
+            'src_tensor': src_tensor,
+            'tgt_word_sent': None,
+            'tgt_tok': tgt_tok,
+            'tgt_tok_str': tgt_tok_str,
+            'tgt_tensor': tgt_tensor
+        }
+        #None, src_tok, src_tok_str, src_tensor, None, tgt_tok, tgt_tok_str, tgt_tensor
 
     def trace_forward(self, src_tensor, tgt_tensor):
         r"""Forward-pass through the model.

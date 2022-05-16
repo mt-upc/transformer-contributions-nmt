@@ -1,3 +1,4 @@
+from ctypes import alignment
 from email.policy import default
 import torch
 import seaborn as sns
@@ -10,9 +11,15 @@ from collections import Counter, defaultdict
 from scipy.stats import spearmanr, pearsonr
 import warnings
 import string
-
+from pathlib import Path
 import os
+from dotenv import load_dotenv
+load_dotenv()
+
 import alignment.align as align
+
+gold_dir = Path(os.environ['GOLD_ALIGNMENT_DATA_DIR'])
+
 
 class aer():
     def __init__(self, test_set_dir, model_name_save, mode_list, num_layers, src, tgt, tokenizer):
@@ -24,7 +31,7 @@ class aer():
         self.test_tgt_bpe = f'{test_set_dir}/test.{tokenizer}.{tgt}'
         self.test_src_word = f'{test_set_dir}/test.{src}'
         self.test_tgt_word = f'{test_set_dir}/test.{tgt}'
-        self.gold_alignment = test_set_dir / "alignment.talp"
+        self.gold_alignment = gold_dir / "alignment.talp"
         self.model_name_save = model_name_save
         self.mode_list = mode_list
         self.num_layers = num_layers
@@ -45,7 +52,10 @@ class aer():
             if i%200==0:
                 print(i)
 
-            src_word_sent, src_tok, src_tok_str, src_tensor, tgt_word_sent, tgt_tok, tgt_tok_str, tgt_tensor = hub.get_interactive_sample(i, self.test_set_dir, self.src, self.tgt, self.tokenizer)
+            sample = hub.get_interactive_sample(i, self.test_set_dir, self.src, self.tgt, self.tokenizer)
+            src_tensor = sample['src_tensor']
+            tgt_tensor = sample['tgt_tensor']
+            #src_tok = sample['src_tok']
             
             # if contrib_type == 'attn_w':
             #     norm_mode = 'sum_one'

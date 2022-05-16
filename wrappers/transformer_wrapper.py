@@ -70,7 +70,7 @@ class FairseqTransformerHub(GeneratorHubInterface):
                 'tgt_tensor': tgt_tensor
             }
 
-    def get_interactive_sample(self, i, test_set_dir, src, tgt, tokenizer, hallucination=False):
+    def get_interactive_sample(self, i, test_set_dir, src, tgt, tokenizer, hallucination=None):
         """Get interactive sample from tokenized and original word files."""
 
         test_src_bpe = f'{test_set_dir}/test.{tokenizer}.{src}'
@@ -97,15 +97,15 @@ class FairseqTransformerHub(GeneratorHubInterface):
         src_tok_str = src_bpe_sents[i].strip() # removes leading and trailing whitespaces
         src_tok = src_tok_str.split()
 
-        
-
         eos_id = self.task.tgt_dict.eos_index # EOS token index
 
         tgt_tok_str = tgt_bpe_sents[i].strip() # removes leading and trailing whitespaces
         tgt_tok = tgt_tok_str.split()
-        if hallucination:
-            #src_tok = ['<pad>'] + ['▁'+ src_tok[0]] + src_tok[1:]
-            tgt_tok = ['<pad>'] + ['▁'+ tgt_tok[0]] + tgt_tok[1:]
+
+        # Add token to beginning of source sentence
+        if hallucination is not None:
+            src_tok = [hallucination] + ['▁'+ src_tok[0]] + src_tok[1:]
+            #tgt_tok = ['<pad>'] + ['▁'+ tgt_tok[0]] + tgt_tok[1:]
         src_tensor = torch.tensor([self.src_dict.index(t) for t in src_tok] + [eos_id])
         tgt_tensor = torch.tensor([eos_id] + [self.tgt_dict.index(t) for t in tgt_tok])
 
@@ -432,6 +432,9 @@ class FairseqTransformerHub(GeneratorHubInterface):
         else:
             raise ArgumentError(f"contribution_type '{contrib_type}' unknown")
 
+        # print('resultants_norm', resultants_norm.size())
+        # print('contributions', contributions.size())
+
         return contributions, resultants_norm
     
     def get_contributions(self, src_tensor, tgt_tensor, contrib_type='l1', norm_mode='min_sum', pre_layer_norm=False):
@@ -476,6 +479,7 @@ class FairseqTransformerHub(GeneratorHubInterface):
                         print('Please change the normalization mode to sum one')
                 else:
                     contributions, resultant_norms = f(attn.replace('.', f'.{l}.'))
+                #print(attn)
                 contributions = self.normalize_contrib(contributions, norm_mode, resultant_norm=resultant_norms).unsqueeze(1)
                 # Mask upper triangle of decoder self-attention matrix (and normalize)
                 # if attn == 'decoder.self_attn':

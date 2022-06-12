@@ -2,6 +2,10 @@ import logging
 import warnings
 from functools import partial
 from collections import defaultdict
+###########
+from wrappers.interactive import *
+from fairseq import checkpoint_utils, distributed_utils, options, tasks, utils
+###########
 
 # From hub.utils
 import copy
@@ -73,16 +77,20 @@ class FairseqMultilingualTransformerHub(FairseqTransformerHub):
         # Adding EOS token to beggining of target sentence
         tgt_tensor = self.task.dataset(split)[index]['target']
         #dataset=task.datasets[split + ':' + langdir],
-        tgt_tensor = torch.cat([torch.tensor([self.task.target_dictionary.eos_index]),
-                                tgt_tensor[:-1]
-                                ]).to(tgt_tensor.device)
+        # tgt_tensor = torch.cat([torch.tensor([self.task.target_dictionary.eos_index]),
+        #                         tgt_tensor[:-1]
+        #                         ]).to(tgt_tensor.device)
         tgt_tok = self.decode(tgt_tensor, self.task.target_dictionary)
         tgt_sent = self.decode(tgt_tensor, self.task.target_dictionary, as_string=True)
 
         return src_sent, src_tok, src_tensor, tgt_sent, tgt_tok, tgt_tensor
 
-    def get_interactive_sample(self, i, test_set_dir, src, tgt, tokenizer, hallucination=None):
+    def get_interactive_sample(self, i, test_set_dir, src, tgt,
+                                tokenizer, prepare_input_encoder,
+                                prepare_input_decoder, hallucination=None):
         """Get interactive sample from tokenized and original word files."""
+
+        ## Cambiar a task.inference_step
 
         test_src_bpe = f'{test_set_dir}/test.{tokenizer}.{src}'
         test_tgt_bpe = f'{test_set_dir}/test.{tokenizer}.{tgt}'
@@ -106,28 +114,33 @@ class FairseqMultilingualTransformerHub(FairseqTransformerHub):
         tgt_word_sent = tgt_word_sents[i]
 
         src_tok_str = src_bpe_sents[i].strip() # removes leading and trailing whitespaces
-        src_tok = src_tok_str.split()
+        #src_tok = src_tok_str.split()
 
         tgt_tok_str = tgt_bpe_sents[i].strip() # removes leading and trailing whitespaces
-        tgt_tok = tgt_tok_str.split()
+        #tgt_tok = tgt_tok_str.split()
 
-        # M2M generate has --decoder-langtok --encoder-langtok src
-        # adds source language token to the source sentence
-        # adds target language token to the target sentence
-        src_lan_token = get_lang_tok(lang=self.task.source_langs[0], lang_tok_style=LangTokStyle.multilingual.value)
-        tgt_lan_token = get_lang_tok(lang=self.task.target_langs[0], lang_tok_style=LangTokStyle.multilingual.value)
-        idx_src_lan_token = self.task.source_dictionary.index(src_lan_token)
-        idx_tgt_lan_token = self.task.target_dictionary.index(tgt_lan_token)
+        #############################
+        src_tok, src_tensor = prepare_input_encoder(self, [src_tok_str])
+        tgt_tok, tgt_tensor = prepare_input_decoder(self, tgt_tok_str)
+        #############################
 
-         # Add token to beginning of source sentence
-        if hallucination is not None:
-            src_tok = [src_lan_token] + [hallucination] + src_tok + [self.task.source_dictionary[self.task.source_dictionary.eos_index]]
-        else:
-            src_tok = [src_lan_token] + src_tok + [self.task.source_dictionary[self.task.source_dictionary.eos_index]]
-        tgt_tok = [self.task.target_dictionary[self.task.target_dictionary.eos_index]] + [tgt_lan_token] + tgt_tok
+        # # M2M generate has --decoder-langtok --encoder-langtok src
+        # # adds source language token to the source sentence
+        # # adds target language token to the target sentence
+        # src_lan_token = get_lang_tok(lang=self.task.source_langs[0], lang_tok_style=LangTokStyle.multilingual.value)
+        # tgt_lan_token = get_lang_tok(lang=self.task.target_langs[0], lang_tok_style=LangTokStyle.multilingual.value)
+        # # idx_src_lan_token = self.task.source_dictionary.index(src_lan_token)
+        # # idx_tgt_lan_token = self.task.target_dictionary.index(tgt_lan_token)
 
-        src_tensor = torch.tensor([self.task.source_dictionary.index(s) for s in src_tok])
-        tgt_tensor = torch.tensor([self.task.target_dictionary.index(t) for t in tgt_tok])
+        #  # Add token to beginning of source sentence
+        # if hallucination is not None:
+        #     src_tok = [hallucination] + src_tok + [self.task.source_dictionary[self.task.source_dictionary.eos_index]]
+        # else:
+        #     src_tok = src_tok + [self.task.source_dictionary[self.task.source_dictionary.eos_index]]
+        # tgt_tok = [self.task.target_dictionary[self.task.target_dictionary.eos_index]] + [tgt_lan_token] + tgt_tok
+
+        # src_tensor = torch.tensor([self.task.source_dictionary.index(s) for s in src_tok])
+        # tgt_tensor = torch.tensor([self.task.target_dictionary.index(t) for t in tgt_tok])
 
         if test_src_word and test_tgt_word:
             src_word_sent = src_word_sents[i]

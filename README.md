@@ -1,6 +1,6 @@
-# ALTI in NMT
+# ALTI+
 
-We extend ALTI method presented in [Ferrando et al., 2022](https://arxiv.org/abs/2203.04212) to the encoder-decoder setting.
+This repository includes the coe from the paper [Ferrando et al., 2022](https://arxiv.org/abs/2205.11631). We extend ALTI method presented in [Ferrando et al., 2022](https://arxiv.org/abs/2203.04212) to the encoder-decoder setting.
 ## Usage with M2M model
 
 We follow fairseq [M2M](https://github.com/pytorch/fairseq/tree/main/examples/m2m_100) instructions and download the models (412M and 1.2B), dictionary, and SPM tokenizer in `M2M_CKPT_DIR`. Then, set the environmental variable:

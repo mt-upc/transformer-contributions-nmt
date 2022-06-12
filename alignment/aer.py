@@ -16,25 +16,33 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
+from fairseq.data.multilingual.multilingual_utils import (
+    EncoderLangtok,
+    LangTokSpec,
+    LangTokStyle,
+    augment_dictionary,
+    get_lang_tok,
+)
+
 import alignment.align as align
 
 gold_dir = Path(os.environ['GOLD_ALIGNMENT_DATA_DIR'])
 
 
 class aer():
-    def __init__(self, test_set_dir, model_name_save, mode_list, num_layers, src, tgt, tokenizer):
-        self.test_set_dir = test_set_dir
-        self.src = src
-        self.tgt = tgt
-        self.tokenizer = tokenizer
-        self.test_src_bpe = f'{test_set_dir}/test.{tokenizer}.{src}'
-        self.test_tgt_bpe = f'{test_set_dir}/test.{tokenizer}.{tgt}'
-        self.test_src_word = f'{test_set_dir}/test.{src}'
-        self.test_tgt_word = f'{test_set_dir}/test.{tgt}'
+    def __init__(self, args, mode_list):
+        self.test_set_dir = args.test_set_dir
+        self.src = args.src
+        self.tgt = args.tgt
+        self.tokenizer = args.tokenizer
+        self.test_src_bpe = f'{args.test_set_dir}/test.{args.tokenizer}.{args.src}'
+        self.test_tgt_bpe = f'{args.test_set_dir}/test.{args.tokenizer}.{args.tgt}'
+        self.test_src_word = f'{args.test_set_dir}/test.{args.src}'
+        self.test_tgt_word = f'{args.test_set_dir}/test.{args.tgt}'
         self.gold_alignment = gold_dir / "alignment.talp"
-        self.model_name_save = model_name_save
+        self.model_name_save = args.model_name_save
         self.mode_list = mode_list
-        self.num_layers = num_layers
+        self.num_layers = args.num_layers
 
     def extract_contribution_matrix(self, hub, model_name_save, contrib_type, pre_layer_norm=False):
         """Extract contribution matrix."""
@@ -53,19 +61,18 @@ class aer():
                 print(i)
 
             sample = hub.get_interactive_sample(i, self.test_set_dir, self.src, self.tgt, self.tokenizer)
-            src_tensor = sample['src_tensor']
-            tgt_tensor = sample['tgt_tensor']
-            #src_tok = sample['src_tok']
             
-            # if contrib_type == 'attn_w':
-            #     norm_mode = 'sum_one'
-            # else:
-            #     norm_mode = 'min_sum'
+            if 'm2m' in model_name_save:
+                src_tensor = sample['src_tensor']
+                src_lan_token = get_lang_tok(lang=hub.task.source_langs[0], lang_tok_style=LangTokStyle.multilingual.value)
+                idx_src_lan_token = hub.task.source_dictionary.index(src_lan_token)
+                src_tensor_forward = torch.cat([torch.tensor([idx_src_lan_token]).to(src_tensor.device),src_tensor])
+            else:
+                src_tensor_forward = sample['src_tensor']
+            tgt_tensor = sample['tgt_tensor']
 
-            norm_mode = 'min_sum'
-
-            alti_model = hub.get_contribution_rollout(src_tensor, tgt_tensor, contrib_type,
-                                                        norm_mode=norm_mode,pre_layer_norm=pre_layer_norm)
+            alti_model = hub.get_contribution_rollout(src_tensor_forward, tgt_tensor, contrib_type,
+                                                        norm_mode='min_sum',pre_layer_norm=pre_layer_norm)
 
             # Cross-attention
             cross_attn_contributions = alti_model['decoder.encoder_attn'].detach()                          
@@ -77,10 +84,10 @@ class aer():
 
             # Total ALTI
             total_alti = alti_model['total'].detach()
-            total_alti_pred_src = total_alti[:,:,:src_tensor.size(0)] # source sentence + </s>
+            total_alti_pred_src = total_alti[:,:,:src_tensor_forward.size(0)] # source sentence + </s>
 
             # Attention weights
-            alti_model_attn_w = torch.squeeze(hub.get_contributions(src_tensor, tgt_tensor, contrib_type='attn_w',
+            alti_model_attn_w = torch.squeeze(hub.get_contributions(src_tensor_forward, tgt_tensor, contrib_type='attn_w',
                                                         norm_mode='sum_one',pre_layer_norm=pre_layer_norm)['decoder.encoder_attn']).detach()
 
             extract_matrix.append({"alti":total_alti_pred_src, "decoder.encoder_attn": cross_attn_contributions,
@@ -138,13 +145,10 @@ class aer():
                                 splited_src_word_sent = ['__src__'] + splited_src_word_sent
                                 splited_tgt_word_sent = ['__tgt__'] + splited_tgt_word_sent
 
-
                             src_word_to_bpe = align.convert_bpe_word(splited_src_bpe_sent, splited_src_word_sent)
                             src_len = len(src_word_sent.split())
                             tgt_word_to_bpe = align.convert_bpe_word(splited_tgt_bpe_sent, splited_tgt_word_sent)
-                            
                             contrib_matrix = torch.squeeze(extract_matrix[i][mode][l]).detach().cpu().numpy()
-                            #print(contrib_matrix.shape)
                                 
                             if setting == "AWI":
                                 contrib_matrix = contrib_matrix[list(range(1,len(contrib_matrix)))+[0]]

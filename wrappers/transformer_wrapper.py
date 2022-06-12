@@ -227,6 +227,13 @@ class FairseqTransformerHub(GeneratorHubInterface):
             x_max = x.max(-1, keepdim=True)[0]
             x_norm = (x - x_min) / (x_max - x_min)
             x_norm = x_norm / x_norm.sum(dim=-1, keepdim=True)
+        elif mode == 'max_min':
+            x = -x
+            # Min-max normalization
+            x_min = x.min(-1, keepdim=True)[0]
+            x_max = x.max(-1, keepdim=True)[0]
+            x_norm = (x_max - x) / (x_max - x_min)
+            #x_norm = x_norm / x_norm.sum(dim=-1, keepdim=True)
         elif mode == 'softmax':
             # Softmax
             x_norm = F.softmax(x / temperature, dim=-1)
@@ -418,10 +425,8 @@ class FairseqTransformerHub(GeneratorHubInterface):
 
         if contrib_type == 'l1':
             contributions = -F.pairwise_distance(transformed_vectors, resultant.unsqueeze(2), p=1)
-            #print(contributions)
             resultants_norm = torch.norm(torch.squeeze(resultant),p=1,dim=-1)
-            #resultants_norm=None
-            #print('resultants_norm',resultants_norm)
+
         elif contrib_type == 'l2':
             contributions = -F.pairwise_distance(transformed_vectors, resultant.unsqueeze(2), p=2)
             resultants_norm = torch.norm(torch.squeeze(resultant),p=2,dim=-1)
@@ -431,9 +436,6 @@ class FairseqTransformerHub(GeneratorHubInterface):
             return contributions, None
         else:
             raise ArgumentError(f"contribution_type '{contrib_type}' unknown")
-
-        # print('resultants_norm', resultants_norm.size())
-        # print('contributions', contributions.size())
 
         return contributions, resultants_norm
     
@@ -495,7 +497,6 @@ class FairseqTransformerHub(GeneratorHubInterface):
         # if contrib_type == 'attn_w':
         #     c = {k: v.sum(2) for k, v in c.items()}
         
-
         # Rollout encoder
         def compute_joint_attention(att_mat):
             """ Compute attention rollout given contributions or attn weights + residual."""
@@ -583,83 +584,3 @@ class FairseqTransformerHub(GeneratorHubInterface):
         #c_roll[enc_sa] = relevances_enc_self_attn
 
         return c_roll
-    
-    # def viz_contributions(self, src_tensor, tgt_tensor, contrib_type, roll=False, attn=None, layer=None, head=None, **contrib_kwargs):
-    #     if roll:
-    #         contrib = self.get_contribution_rollout(src_tensor, tgt_tensor, contrib_type, **contrib_kwargs)
-    #     else:
-    #         contrib = self.get_contributions(src_tensor, tgt_tensor, contrib_type, **contrib_kwargs)
-        
-    #     src_tok = self.decode(src_tensor, self.task.src_dict)
-    #     tgt_tok = self.decode(tgt_tensor, self.task.tgt_dict)
-        
-    #     def what_to_show(arg, valid_values):
-    #         valid_type = type(valid_values[0])
-    #         if arg is None:
-    #             to_show = valid_values
-    #         elif isinstance(arg, valid_type):
-    #             to_show = [arg]
-    #         elif isinstance(arg, list):
-    #             to_show = [a for a in arg if a in valid_values]
-    #         else:
-    #             raise TypeError("Argument must be str, List[str] or None")
-
-    #         return to_show
-        
-    #     def show_contrib_heatmap(data, k_tok, q_tok, title):
-    #         df = pd.DataFrame(
-    #             data=data,
-    #             columns=k_tok,
-    #             index=q_tok
-    #         )
-
-    #         fig, ax = plt.subplots()
-    #         g = sns.heatmap(df, cmap="Blues", cbar=True, square=True, ax=ax, fmt='.2f')
-    #         g.set_title(title)
-    #         g.set_xlabel("Key")
-    #         g.set_ylabel("Query")
-    #         g.set_xticklabels(g.get_xticklabels(), rotation=50, horizontalalignment='center',fontsize=10)
-    #         g.set_yticklabels(g.get_yticklabels(),fontsize=10);
-
-    #         fig.show()  
-
-    #     for a in what_to_show(attn, self.ATTN_MODULES):
-    #         enc_dec_, _, attn_module_ = self.parse_module_name(a)
-    #         num_layers = self.get_module(enc_dec_).num_layers
-    #         if a == 'encoder.self_attn':
-    #             q_tok = src_tok + ['<EOS>']
-    #             k_tok = src_tok + ['<EOS>']
-    #         elif a == 'decoder.self_attn':
-    #             q_tok = tgt_tok + ['<EOS>']
-    #             k_tok = ['<EOS>'] + tgt_tok
-    #         elif a == 'decoder.encoder_attn':
-    #             q_tok = tgt_tok + ['<EOS>']
-    #             k_tok = src_tok + ['<EOS>']
-    #         else:
-    #             pass
-            
-    #         #q_tok = (src_tok + ['<EOS>']) if a == 'encoder.self_attn' else (['<EOS>'] + tgt_tok)
-    #         #k_tok = (['<EOS>'] + tgt_tok) if a == 'decoder.self_attn' else (src_tok + ['<EOS>'])
-
-    #         for l in what_to_show(layer, list(range(num_layers))):
-    #             num_heads = self.get_module(a.replace('.', f'.{l}.')).num_heads
-                
-    #             contrib_ = contrib[a][0,l]
-
-
-    #             if contrib_type == 'attn_w' and roll == False:
-    #                 for h in what_to_show(head, [-1] + list(range(num_heads))):
-    #                     contrib__ = contrib_.mean(0) if h == -1 else contrib_[h]
-    #                     show_contrib_heatmap(
-    #                         contrib__.cpu().detach().numpy(), #3
-    #                         k_tok,
-    #                         q_tok,
-    #                         title=f"{contrib_type}; {a}; layer: {l}; head: {'mean' if h == -1 else h}"
-    #                     )
-    #             else:
-    #                 show_contrib_heatmap(
-    #                     contrib_.cpu().detach().numpy(),
-    #                     k_tok,
-    #                     q_tok,
-    #                     title=f"{contrib_type}; {a}; layer: {l}"
-    #                 )

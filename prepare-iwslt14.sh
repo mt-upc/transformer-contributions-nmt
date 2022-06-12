@@ -9,8 +9,8 @@
 # git clone https://github.com/rsennrich/subword-nmt.git
 
 SCRIPTS=$HOME/mosesdecoder/scripts
-# TOKENIZER=$SCRIPTS/tokenizer/tokenizer.perl
-# LC=$SCRIPTS/tokenizer/lowercase.perl
+TOKENIZER=$SCRIPTS/tokenizer/tokenizer.perl
+LC=$SCRIPTS/tokenizer/lowercase.perl
 CLEAN=$SCRIPTS/training/clean-corpus-n.perl
 # BPEROOT=$HOME/subword-nmt/subword_nmt
 # BPE_TOKENS=10000
@@ -18,9 +18,10 @@ CLEAN=$SCRIPTS/training/clean-corpus-n.perl
 src=de
 tgt=en
 lang=de-en
-prep=iwslt14.tokenized.de-en
-tmp=$prep/tmp
+# prep=iwslt14.tokenized.de-en
 orig=/home/usuaris/scratch/javier.ferrando/datasets/orig
+prep=$orig/iwslt14.tokenized.de-en
+tmp=$prep/tmp
 
 mkdir -p $orig $tmp $prep
 
@@ -37,15 +38,15 @@ for l in $src $tgt; do
     grep '<seg id' $o | \
         sed -e 's/<seg id="[0-9]*">\s*//g' | \
         sed -e 's/\s*<\/seg>\s*//g' | \
-        sed -e "s/\’/\'/g" | \
-    perl $TOKENIZER -threads 8 -l $l | \
-    perl $LC > $f
+        sed -e "s/\’/\'/g" > $f
+    #perl $TOKENIZER -threads 8 -l $l \
+    #perl $LC > $f
     echo ""
     done
 done
 
 
-echo "creating train, valid, test..."
+echo "merging test..."
 for l in $src $tgt; do
     cat $tmp/IWSLT14.TED.dev2010.de-en.$l \
         $tmp/IWSLT14.TEDX.dev2012.de-en.$l \

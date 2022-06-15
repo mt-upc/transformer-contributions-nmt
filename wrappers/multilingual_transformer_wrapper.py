@@ -2,10 +2,9 @@ import logging
 import warnings
 from functools import partial
 from collections import defaultdict
-###########
 from wrappers.interactive import *
 from fairseq import checkpoint_utils, distributed_utils, options, tasks, utils
-###########
+
 
 # From hub.utils
 import copy
@@ -13,17 +12,6 @@ from typing import Any, Dict, Iterator, List
 from omegaconf import open_dict
 from fairseq import utils
 logger = logging.getLogger(__name__)
-
-from fairseq.data.multilingual.multilingual_utils import (
-    EncoderLangtok,
-    LangTokSpec,
-    LangTokStyle,
-    augment_dictionary,
-    get_lang_tok,
-)
-
-
-import pandas as pd
 
 import torch
 import torch.nn as nn
@@ -34,9 +22,6 @@ from fairseq.models.transformer import TransformerModel
 
 from einops import rearrange
 
-import matplotlib.pyplot as plt
-import seaborn as sns
-
 
 class FairseqMultilingualTransformerHub(FairseqTransformerHub):
 
@@ -46,12 +31,13 @@ class FairseqMultilingualTransformerHub(FairseqTransformerHub):
         self.to("cuda" if torch.cuda.is_available() else "cpu")
     
     @classmethod
-    def from_pretrained(cls, checkpoint_dir, checkpoint_file, data_name_or_path, source_lang, target_lang, lang_pairs):
+    def from_pretrained(cls, checkpoint_dir, checkpoint_file, data_name_or_path,
+                         source_lang, target_lang, lang_pairs, fixed_dictionary):
         hub_interface = TransformerModel.from_pretrained(checkpoint_dir, checkpoint_file, data_name_or_path,
                                                         source_lang=source_lang,
                                                         target_lang=target_lang,
                                                         lang_pairs=lang_pairs,
-                                                        fixed_dictionary =f'{checkpoint_dir}/model_dict.128k.txt'
+                                                        fixed_dictionary=fixed_dictionary
                                                         )
         return cls(hub_interface.cfg, hub_interface.task, hub_interface.models)
 
@@ -74,24 +60,22 @@ class FairseqMultilingualTransformerHub(FairseqTransformerHub):
         src_tok = self.decode(src_tensor, self.task.source_dictionary)
         src_sent = self.decode(src_tensor, self.task.source_dictionary, as_string=True)
 
-        # Adding EOS token to beggining of target sentence
         tgt_tensor = self.task.dataset(split)[index]['target']
-        #dataset=task.datasets[split + ':' + langdir],
-        # tgt_tensor = torch.cat([torch.tensor([self.task.target_dictionary.eos_index]),
-        #                         tgt_tensor[:-1]
-        #                         ]).to(tgt_tensor.device)
         tgt_tok = self.decode(tgt_tensor, self.task.target_dictionary)
         tgt_sent = self.decode(tgt_tensor, self.task.target_dictionary, as_string=True)
 
-        return src_sent, src_tok, src_tensor, tgt_sent, tgt_tok, tgt_tensor
-
+        return {
+                'src_tok': src_tok,
+                'src_tensor': src_tensor,
+                'tgt_tok': tgt_tok,
+                'tgt_tensor': tgt_tensor,
+                'src_sent': src_sent,
+                'tgt_sent': tgt_sent
+            }
     def get_interactive_sample(self, i, test_set_dir, src, tgt,
                                 tokenizer, prepare_input_encoder,
                                 prepare_input_decoder, hallucination=None):
         """Get interactive sample from tokenized and original word files."""
-
-        ## Cambiar a task.inference_step
-
         test_src_bpe = f'{test_set_dir}/test.{tokenizer}.{src}'
         test_tgt_bpe = f'{test_set_dir}/test.{tokenizer}.{tgt}'
         test_src_word = f'{test_set_dir}/test.{src}'
@@ -114,33 +98,10 @@ class FairseqMultilingualTransformerHub(FairseqTransformerHub):
         tgt_word_sent = tgt_word_sents[i]
 
         src_tok_str = src_bpe_sents[i].strip() # removes leading and trailing whitespaces
-        #src_tok = src_tok_str.split()
-
         tgt_tok_str = tgt_bpe_sents[i].strip() # removes leading and trailing whitespaces
-        #tgt_tok = tgt_tok_str.split()
 
-        #############################
         src_tok, src_tensor = prepare_input_encoder(self, [src_tok_str])
         tgt_tok, tgt_tensor = prepare_input_decoder(self, tgt_tok_str)
-        #############################
-
-        # # M2M generate has --decoder-langtok --encoder-langtok src
-        # # adds source language token to the source sentence
-        # # adds target language token to the target sentence
-        # src_lan_token = get_lang_tok(lang=self.task.source_langs[0], lang_tok_style=LangTokStyle.multilingual.value)
-        # tgt_lan_token = get_lang_tok(lang=self.task.target_langs[0], lang_tok_style=LangTokStyle.multilingual.value)
-        # # idx_src_lan_token = self.task.source_dictionary.index(src_lan_token)
-        # # idx_tgt_lan_token = self.task.target_dictionary.index(tgt_lan_token)
-
-        #  # Add token to beginning of source sentence
-        # if hallucination is not None:
-        #     src_tok = [hallucination] + src_tok + [self.task.source_dictionary[self.task.source_dictionary.eos_index]]
-        # else:
-        #     src_tok = src_tok + [self.task.source_dictionary[self.task.source_dictionary.eos_index]]
-        # tgt_tok = [self.task.target_dictionary[self.task.target_dictionary.eos_index]] + [tgt_lan_token] + tgt_tok
-
-        # src_tensor = torch.tensor([self.task.source_dictionary.index(s) for s in src_tok])
-        # tgt_tensor = torch.tensor([self.task.target_dictionary.index(t) for t in tgt_tok])
 
         if test_src_word and test_tgt_word:
             src_word_sent = src_word_sents[i]
@@ -155,7 +116,6 @@ class FairseqMultilingualTransformerHub(FairseqTransformerHub):
                 'tgt_tok_str': tgt_tok_str,
                 'tgt_tensor': tgt_tensor
             }
-            #return src_word_sent, src_tok, src_tok_str, src_tensor, tgt_word_sent, tgt_tok, tgt_tok_str, tgt_tensor
 
         return {
             'src_word_sent': None,
@@ -167,7 +127,6 @@ class FairseqMultilingualTransformerHub(FairseqTransformerHub):
             'tgt_tok_str': tgt_tok_str,
             'tgt_tensor': tgt_tensor
         }
-        #None, src_tok, src_tok_str, src_tensor, None, tgt_tok, tgt_tok_str, tgt_tensor
 
     def trace_forward(self, src_tensor, tgt_tensor):
         r"""Forward-pass through the model.
@@ -189,7 +148,6 @@ class FairseqMultilingualTransformerHub(FairseqTransformerHub):
             layer_outputs:
                 dictionary with the input of the modeules of the model.
         """
-        #self.zero_grad()
         with torch.no_grad():
 
             layer_inputs = defaultdict(list)

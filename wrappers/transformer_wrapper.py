@@ -52,7 +52,6 @@ class FairseqTransformerHub(GeneratorHubInterface):
     def get_sample(self, split, index):
 
         if split not in self.task.datasets.keys():
-            print(split)
             self.task.load_dataset(split)
 
         src_tensor = self.task.dataset(split)[index]['source']
@@ -67,7 +66,9 @@ class FairseqTransformerHub(GeneratorHubInterface):
                 'src_tok': src_tok,
                 'src_tensor': src_tensor,
                 'tgt_tok': tgt_tok,
-                'tgt_tensor': tgt_tensor
+                'tgt_tensor': tgt_tensor,
+                'src_sent': src_sent,
+                'tgt_sent': tgt_sent
             }
 
     def get_interactive_sample(self, i, test_set_dir, src, tgt, tokenizer, hallucination=None):
@@ -77,9 +78,6 @@ class FairseqTransformerHub(GeneratorHubInterface):
         test_tgt_bpe = f'{test_set_dir}/test.{tokenizer}.{tgt}'
         test_src_word = f'{test_set_dir}/test.{src}'
         test_tgt_word = f'{test_set_dir}/test.{tgt}'
-
-        # test_src_word = europarl_dir / "data_in_progress/test.uc.de"
-        # test_tgt_word = europarl_dir / "data_in_progress/test.uc.en"
 
         with open(test_src_bpe, encoding="utf-8") as fbpe:
             # BPE source sentences
@@ -133,10 +131,7 @@ class FairseqTransformerHub(GeneratorHubInterface):
             'tgt_tok': tgt_tok,
             'tgt_tok_str': tgt_tok_str,
             'tgt_tensor': tgt_tensor
-        }
-
-        #return None, src_tok, src_tok_str, src_tensor, None, tgt_tok, tgt_tok_str, tgt_tensor
-            
+        }            
        
     def parse_module_name(self, module_name):
         """ Returns (enc_dec, layer, module)"""
@@ -192,7 +187,6 @@ class FairseqTransformerHub(GeneratorHubInterface):
             layer_outputs:
                 dictionary with the input of the modeules of the model.
         """
-        #self.zero_grad()
         with torch.no_grad():
 
             layer_inputs = defaultdict(list)
@@ -390,9 +384,6 @@ class FairseqTransformerHub(GeneratorHubInterface):
             # In post-ln we compare with the input of the first layernorm
             out_q_pre_ln_th = layer_inputs[f"models.0.{enc_dec_}.layers.{l}.{attn_module_}_layer_norm"][0][0].transpose(0, 1)
         
-        # print('attn_module_', attn_module_)
-        # print('out_q_pre_ln_th',out_q_pre_ln_th[0,0,:10])
-        # print('out_q_pre_ln',out_q_pre_ln[0,0,:10])
         assert torch.dist(out_q_pre_ln_th, out_q_pre_ln).item() < 1e-3 * out_q_pre_ln.numel()
         
         if pre_layer_norm:
@@ -404,23 +395,10 @@ class FairseqTransformerHub(GeneratorHubInterface):
             dense_bias_term = l_transform(b_o, w_ln)*ln_std_coef # (batch,src_len,1,embed_dim)
             attn_output = transformed_vectors.sum(dim=2) # (batch,seq_len,embed_dim)
             resultant = attn_output + dense_bias_term.squeeze(2) + b_ln # (batch,seq_len,embed_dim)
-            #print('resultant1', resultant.size())
 
             # Assert resultant (decomposed attention block output) is equal to the real attention block output
             out_q_th_2 = layer_outputs[f"models.0.{enc_dec_}.layers.{l}.{attn_module_}_layer_norm"][0].transpose(0, 1)
             assert torch.dist(out_q_th_2, resultant).item() < 1e-3 * resultant.numel()
-
-        ####
-        # if 'encoder' in enc_dec_:
-        #     ln2_std_coef = 1/(in_res2 + eps_ln2).std(-1).view(1,-1, 1).unsqueeze(-1) # (batch,src_len,1,1)
-        #     transformed_vectors = l_transform(transformed_vectors, w_ln2)*ln2_std_coef # (batch,src_len,tgt_len,embed_dim)
-        #     dense_bias_term2 = l_transform(dense_bias_term, w_ln2)*ln2_std_coef # (batch,src_len,1,embed_dim)
-        #     #resultant = layer_outputs[f"models.0.{enc_dec_}.layers.{l}.final_layer_norm"][0].transpose(0, 1)
-        #     transformed_ln_bias = l_transform(b_ln, w_ln2)
-        #     attn_output = transformed_vectors.sum(dim=2) # (batch,seq_len,embed_dim)
-        #     #resultant = attn_output + dense_bias_term2.squeeze(2) + transformed_ln_bias # (batch,seq_len,embed_dim)
-        #     resultant = layer_outputs[f"models.0.{enc_dec_}.layers.{l}.final_layer_norm"][0].transpose(0, 1)
-        #     #print('resultant2', resultant.size())
 
 
         if contrib_type == 'l1':
@@ -481,7 +459,6 @@ class FairseqTransformerHub(GeneratorHubInterface):
                         print('Please change the normalization mode to sum one')
                 else:
                     contributions, resultant_norms = f(attn.replace('.', f'.{l}.'))
-                #print(attn)
                 contributions = self.normalize_contrib(contributions, norm_mode, resultant_norm=resultant_norms).unsqueeze(1)
                 # Mask upper triangle of decoder self-attention matrix (and normalize)
                 # if attn == 'decoder.self_attn':
@@ -581,6 +558,5 @@ class FairseqTransformerHub(GeneratorHubInterface):
 
         c_roll['total'] = contributions_full_rollout
         c_roll[dec_ed] = cross_contributions
-        #c_roll[enc_sa] = relevances_enc_self_attn
 
         return c_roll

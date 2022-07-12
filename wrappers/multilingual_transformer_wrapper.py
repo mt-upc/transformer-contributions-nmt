@@ -22,6 +22,14 @@ from fairseq.models.transformer import TransformerModel
 
 from einops import rearrange
 
+from fairseq.data.multilingual.multilingual_utils import (
+    EncoderLangtok,
+    LangTokSpec,
+    LangTokStyle,
+    augment_dictionary,
+    get_lang_tok,
+)
+
 
 class FairseqMultilingualTransformerHub(FairseqTransformerHub):
 
@@ -73,8 +81,7 @@ class FairseqMultilingualTransformerHub(FairseqTransformerHub):
                 'tgt_sent': tgt_sent
             }
     def get_interactive_sample(self, i, test_set_dir, src, tgt,
-                                tokenizer, prepare_input_encoder,
-                                prepare_input_decoder, hallucination=None):
+                                tokenizer, hallucination=None):
         """Get interactive sample from tokenized and original word files."""
         test_src_bpe = f'{test_set_dir}/test.{tokenizer}.{src}'
         test_tgt_bpe = f'{test_set_dir}/test.{tokenizer}.{tgt}'
@@ -99,6 +106,30 @@ class FairseqMultilingualTransformerHub(FairseqTransformerHub):
 
         src_tok_str = src_bpe_sents[i].strip() # removes leading and trailing whitespaces
         tgt_tok_str = tgt_bpe_sents[i].strip() # removes leading and trailing whitespaces
+
+        def prepare_input_encoder(hub, tok_sentence):
+            generator = hub.task.build_generator(hub.models, hub.cfg)
+            max_positions = utils.resolve_max_positions(
+            hub.task.max_positions(), *[model.max_positions() for model in hub.models]
+            )
+            def encode_fn(x):
+                return x
+            batch = make_batches(tok_sentence,hub.cfg,hub.task,max_positions,encode_fn)
+            src_tensor = next(batch).src_tokens
+            src_tok = [hub.task.target_dictionary[t] for t in src_tensor[0]]
+            return src_tok, src_tensor[0] # first element in batch
+
+        def prepare_input_decoder(hub, tok_sentence):
+            tok_sentence = tok_sentence.split()
+            lang = hub.task.args.langtoks["main"][1]
+            if lang == 'tgt':
+                lang_tok = hub.task.args.target_lang
+            else:
+                lang_tok = hub.task.args.source_lang
+            lang_tok = get_lang_tok(lang=lang_tok, lang_tok_style=LangTokStyle.multilingual.value)
+            tgt_tok = [hub.task.target_dictionary[hub.task.target_dictionary.eos_index]] + [lang_tok] + tok_sentence
+            tgt_tensor = torch.tensor([hub.task.target_dictionary.index(t) for t in tgt_tok])
+            return tgt_tok, tgt_tensor
 
         src_tok, src_tensor = prepare_input_encoder(self, [src_tok_str])
         tgt_tok, tgt_tensor = prepare_input_decoder(self, tgt_tok_str)

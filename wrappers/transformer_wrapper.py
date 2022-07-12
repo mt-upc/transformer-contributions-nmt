@@ -183,9 +183,9 @@ class FairseqTransformerHub(GeneratorHubInterface):
                 dictionary with 'encoder_out', 'encoder_padding_mask', 'encoder_embedding',
                                 'encoder_states', 'src_tokens', 'src_lengths', 'attn_weights'.
             layer_inputs:
-                dictionary with the input of the modeules of the model.
+                dictionary with the input of the modules of the model.
             layer_outputs:
-                dictionary with the input of the modeules of the model.
+                dictionary with the input of the modules of the model.
         """
         with torch.no_grad():
 
@@ -363,13 +363,13 @@ class FairseqTransformerHub(GeneratorHubInterface):
         else:
             out_qv_pre_ln = torch.cat((attn_v_wo,residual_.unsqueeze(-2)),dim=2)
         
-        # Assert MHA output + residual is equal to pre-layernorm input
+        # Assert MHA output + residual is equal to 1st layer normalization input
         out_q_pre_ln = out_qv_pre_ln.sum(-2) +  b_o
 
 
         if pre_layer_norm:
             if 'encoder' in enc_dec_:
-                 # Encoder (delf-attention) -> final_layer_norm
+                 # Encoder (self-attention) -> final_layer_norm
                 out_q_pre_ln_th = layer_inputs[f"models.0.{enc_dec_}.layers.{l}.final_layer_norm"][0][0].transpose(0, 1)
                 
             else:
@@ -509,13 +509,13 @@ class FairseqTransformerHub(GeneratorHubInterface):
         def rollout(C, C_enc_out):
             """ Contributions rollout whole Transformer-NMT model.
                 Args:
-                    C: [cross_attn;self_dec_attn] before encoder rollout
+                    C: [num_layers, cross_attn;self_dec_attn] contributions decoder layers
                     C_enc_out: encoder rollout last layer
             """
             src_len = C.size(2) - C.size(1)
             tgt_len = C.size(1)
 
-            C_sa_roll = C[:, :, -tgt_len:]     # Self-att, only has 1 layer (last)
+            C_sa_roll = C[:, :, -tgt_len:]     # Self-att decoder, only has 1 layer
             C_ed_roll = torch.einsum(          # encoder rollout*cross-attn
                 "lie , ef -> lif",
                 C[:, :, :src_len],             # Cross-att

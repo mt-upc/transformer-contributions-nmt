@@ -15,6 +15,8 @@ from pathlib import Path
 import os
 from dotenv import load_dotenv
 load_dotenv()
+from wrappers.interactive import *
+from fairseq import checkpoint_utils, distributed_utils, options, tasks, utils
 
 from fairseq.data.multilingual.multilingual_utils import (
     EncoderLangtok,
@@ -27,7 +29,6 @@ from fairseq.data.multilingual.multilingual_utils import (
 import alignment.align as align
 
 gold_dir = Path(os.environ['GOLD_ALIGNMENT_DATA_DIR'])
-
 
 class aer():
     def __init__(self, args, mode_list):
@@ -61,17 +62,18 @@ class aer():
                 print(i)
 
             sample = hub.get_interactive_sample(i, self.test_set_dir, self.src, self.tgt, self.tokenizer)
+            src_tensor = sample['src_tensor']
             
-            if 'm2m' in model_name_save:
-                src_tensor = sample['src_tensor']
-                src_lan_token = get_lang_tok(lang=hub.task.source_langs[0], lang_tok_style=LangTokStyle.multilingual.value)
-                idx_src_lan_token = hub.task.source_dictionary.index(src_lan_token)
-                src_tensor_forward = torch.cat([torch.tensor([idx_src_lan_token]).to(src_tensor.device),src_tensor])
-            else:
-                src_tensor_forward = sample['src_tensor']
+            # if 'm2m' in model_name_save:
+            #     src_tensor = sample['src_tensor']
+            #     # src_lan_token = get_lang_tok(lang=hub.task.source_langs[0], lang_tok_style=LangTokStyle.multilingual.value)
+            #     # idx_src_lan_token = hub.task.source_dictionary.index(src_lan_token)
+            #     # src_tensor_forward = torch.cat([torch.tensor([idx_src_lan_token]).to(src_tensor.device),src_tensor])
+            # else:
+            #     src_tensor_forward = sample['src_tensor']
             tgt_tensor = sample['tgt_tensor']
 
-            alti_model = hub.get_contribution_rollout(src_tensor_forward, tgt_tensor, contrib_type,
+            alti_model = hub.get_contribution_rollout(src_tensor, tgt_tensor, contrib_type,
                                                         norm_mode='min_sum',pre_layer_norm=pre_layer_norm)
 
             # Cross-attention
@@ -84,10 +86,10 @@ class aer():
 
             # Total ALTI
             total_alti = alti_model['total'].detach()
-            total_alti_pred_src = total_alti[:,:,:src_tensor_forward.size(0)] # source sentence + </s>
+            total_alti_pred_src = total_alti[:,:,:src_tensor.size(0)] # source sentence + </s>
 
             # Attention weights
-            alti_model_attn_w = torch.squeeze(hub.get_contributions(src_tensor_forward, tgt_tensor, contrib_type='attn_w',
+            alti_model_attn_w = torch.squeeze(hub.get_contributions(src_tensor, tgt_tensor, contrib_type='attn_w',
                                                         norm_mode='sum_one',pre_layer_norm=pre_layer_norm)['decoder.encoder_attn']).detach()
 
             extract_matrix.append({"alti":total_alti_pred_src, "decoder.encoder_attn": cross_attn_contributions,
@@ -145,21 +147,35 @@ class aer():
                                 splited_src_word_sent = ['__src__'] + splited_src_word_sent
                                 splited_tgt_word_sent = ['__tgt__'] + splited_tgt_word_sent
 
-                            src_word_to_bpe = align.convert_bpe_word(splited_src_bpe_sent, splited_src_word_sent)
                             src_len = len(src_word_sent.split())
-                            tgt_word_to_bpe = align.convert_bpe_word(splited_tgt_bpe_sent, splited_tgt_word_sent)
+
+                            ## Kobayashi word-word attention
+                            # src_word_to_bpe = align.convert_bpe_word(splited_src_bpe_sent, splited_src_word_sent)
+                            # tgt_word_to_bpe = align.convert_bpe_word(splited_tgt_bpe_sent, splited_tgt_word_sent)
+                            
                             contrib_matrix = torch.squeeze(extract_matrix[i][mode][l]).detach().cpu().numpy()
-                                
+
                             if setting == "AWI":
                                 contrib_matrix = contrib_matrix[list(range(1,len(contrib_matrix)))+[0]]
-                                    
-                            contrib_matrix = align.get_word_word_attention(contrib_matrix, src_word_to_bpe, tgt_word_to_bpe, remove_EOS=False)
+
+                            ## Ours word-word attention
+                            source_sentence = splited_src_bpe_sent + ['</s>']
+                            target_sentence = splited_tgt_bpe_sent + ['</s>']
+                            predicted_sentence = splited_tgt_bpe_sent + ['</s>']
+                            
+                            contrib_matrix, words_in, words_out = align.contrib_tok2words(
+                            contrib_matrix,
+                            tokens_in=(source_sentence + target_sentence),
+                            tokens_out=predicted_sentence)
+                            
+                            ## Kobayashi word-word attention
+                            # contrib_matrix = align.get_word_word_attention(contrib_matrix, src_word_to_bpe, tgt_word_to_bpe, remove_EOS=False)
 
                             # Eliminate language tags
                             if "m2m" in self.model_name_save:
                                 contrib_matrix = contrib_matrix[1:,1:]
 
-                            # We don't consider alignment of EOS (target)
+                            # We don't consider alignment of EOS (target/column)
                             contrib_matrix = contrib_matrix[:-1]
 
                             # Assign final mark alignments (Chen et al., 2020)
@@ -171,16 +187,6 @@ class aer():
                             #contrib_matrix[:,-1] = float('-inf')
                             
                             contrib_argmax = np.argmax(contrib_matrix, -1)
-
-                            # if l==1 and mode == 'alti' and setting == 'AWI':
-                            #     print(contrib_matrix)
-                            #     print(contrib_argmax)
-
-
-                            # if filter_alignments==True and l==self.num_layers-1 and mode=='alti':
-                            #     mask = contrib_matrix.sum(-1)>0.5
-                            #     contrib_matrix = list(itertools.compress(contrib_argmax, mask))
-
 
                             for t, s_a in enumerate(contrib_argmax):
                                 if s_a != src_len:
@@ -248,11 +254,11 @@ class aer():
                     sum_a_intersect_p += len(A.intersection(P))
                     sum_a_intersect_s += len(A.intersection(S))
 
-                precision = sum_a_intersect_p / sum_a
+                #precision = sum_a_intersect_p / sum_a
                 recall = sum_a_intersect_s / sum_s
                 aer = 1.0 - ((sum_a_intersect_p + sum_a_intersect_s) / (sum_a + sum_s))
 
-                metrics['precision'].append(precision)
+                #metrics['precision'].append(precision)
                 metrics['recall'].append(recall)
                 metrics['aer'].append(aer)
                 

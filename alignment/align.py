@@ -1,6 +1,38 @@
 import numpy as np
 
 
+def contrib_tok2words_partial(contributions, tokens, axis, reduction):
+    from string import punctuation
+
+    reduction_fs = {
+        'avg': np.mean,
+        'sum': np.sum
+    }
+
+    words = []
+    w_contributions = []
+    for counter, (tok, contrib) in enumerate(zip(tokens, contributions.T)):
+        if tok.startswith('▁') or tok.startswith('__') or tok.startswith('<') or counter==0:# or tok in punctuation:
+            if tok.startswith('▁'):
+                tok = tok[1:]
+            words.append(tok)
+            w_contributions.append([contrib])
+        else:
+            words[-1] += tok
+            w_contributions[-1].append(contrib)
+
+    reduction_f = reduction_fs[reduction]
+    word_contrib = np.stack([reduction_f(np.stack(contrib, axis=axis), axis=axis) for contrib in w_contributions], axis=axis)
+
+    return word_contrib, words
+
+
+def contrib_tok2words(contributions, tokens_in, tokens_out):
+    word_contrib, words_in = contrib_tok2words_partial(contributions, tokens_in, axis=0, reduction='sum')
+    word_contrib, words_out = contrib_tok2words_partial(word_contrib, tokens_out, axis=1, reduction='avg')
+    return word_contrib.T, words_in, words_out
+
+
 def get_word_word_attention(token_token_attention, src_word_to_bpe, trg_word_to_bpe, remove_EOS=True):
     '''
     From bpe tokens-tokens attention to words-words attention

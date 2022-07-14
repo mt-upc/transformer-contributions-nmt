@@ -35,3 +35,9 @@ To use the notebook in generate mode, provide the path to the binarized data by 
 export M2M_DATA_DIR=... # Preprocessed/binarized data
 ```
 and select `data_sample = 'generate'` in `m2m_interpretability.ipynb`.
+
+*Since the method needs to access the activations of keys, queries, and values from the attention mechanism, we need to make fairseq avoid using PyTorch's attention implementation (F.multi_head_attention_forward) by commenting this part of the code in `fairseq/fairseq/modules/multihead_attention.py`:
+
+<p align="center"><br>
+<img src="./img/comment.png" class="center" title="paper logo" width="300"/>
+</p><br>

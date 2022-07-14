@@ -26,9 +26,9 @@ and select `data_sample = 'interactive'` in `m2m_interpretability.ipynb`.
 
 Already tokenized data from [FLORES-101](https://github.com/facebookresearch/flores) and  [De-En Gold Alignment](https://www-i6.informatik.rwth-aachen.de/goldAlignment/) for testing the notebook is available in `./data`.
 
-You can select to evaluate interpretations using teacher forcing or free decoding by setting `teacher_forcing` variable in the notebook.
+You can select to evaluate interpretations using teacher forcing or free decoding/beam search by setting `teacher_forcing` variable in the notebook.
 
-You may be interested in modifying `prepare_input_decoder` and `prepare_input_encoder` functions to handle properly the language tags in the encoder and decoder inputs. Currently follows M2M model structure. This corresponds to `--decoder-langtok` and `--encoder-langtok src` parameters in `fairseq-generate`.
+For your particular multilingual NMT model you may be interested in modifying `prepare_input_decoder` and `prepare_input_encoder` functions in `./wrappers/multilingual_transformer_wrapper.py` to handle properly the language tags in the encoder and decoder inputs. Currently it follows M2M model structure. This corresponds to `--decoder-langtok` and `--encoder-langtok src` parameters in `fairseq-generate`.
 
 To use the notebook in generate mode, provide the path to the binarized data by setting the environment variable `M2M_DATA_DIR`:
 ```bash

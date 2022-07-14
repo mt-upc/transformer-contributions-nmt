@@ -11,5 +11,7 @@ results/
 data/iwslt14
 quantitative_analysis_v2.ipynb
 trash.ipynb
+m2m_analysis.ipynb
+bart.ipynb
 
 .vscode/

@@ -13,7 +13,7 @@ def get_greedy_decoding(hub, src_tensor, beam, inference_step_args=None):
     # Compute beam search (beam = 1 greedy decoding)
     for pred in hub.generate(src_tensor, beam, inference_step_args = inference_step_args):
         tgt_tensor_free.append(pred['tokens'])
-        translation = hub.decode(pred['tokens'][1:-1], hub.task.target_dictionary, as_string=True)
+        translation = hub.decode(pred['tokens'][:-1], hub.task.target_dictionary, as_string=True)
 
     hypo = 0 # first hypothesis
     tgt_tensor = tgt_tensor_free[hypo]
@@ -65,16 +65,16 @@ def get_translation(hub, i, args, perturb_type='src', prefix_subwords=None, cont
         src_tensor = sample['src_tensor']
         tgt_tensor, translation = get_greedy_decoding(hub, src_tensor, args.beam, inference_step_args=None)
 
-    src_lan_token = get_lang_tok(lang=hub.task.source_langs[0], lang_tok_style=LangTokStyle.multilingual.value)
-    idx_src_lan_token = hub.task.source_dictionary.index(src_lan_token)
-    src_tensor_forward = torch.cat([torch.tensor([idx_src_lan_token]).to(src_tensor.device),src_tensor])
+    # src_lan_token = get_lang_tok(lang=hub.task.source_langs[0], lang_tok_style=LangTokStyle.multilingual.value)
+    # idx_src_lan_token = hub.task.source_dictionary.index(src_lan_token)
+    # src_tensor_forward = torch.cat([torch.tensor([idx_src_lan_token]).to(src_tensor.device),src_tensor])
     
     # Compute contributions with ALTI if required
     if contributions:
-        total_rollout = hub.get_contribution_rollout(src_tensor_forward, tgt_tensor, 'l1',
+        total_rollout = hub.get_contribution_rollout(src_tensor, tgt_tensor, 'l1',
                                                     norm_mode='min_sum',
                                                     pre_layer_norm=args.pre_layer_norm)['total'].detach()
-        src_total_alti = contribution_source(total_rollout, src_tensor_forward)
+        src_total_alti = contribution_source(total_rollout, src_tensor)
     else:
         src_total_alti = None
 

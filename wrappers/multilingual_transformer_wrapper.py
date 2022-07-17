@@ -104,11 +104,11 @@ class FairseqMultilingualTransformerHub(FairseqTransformerHub):
         src_word_sent = src_word_sents[i]
         tgt_word_sent = tgt_word_sents[i]
 
-        src_tok_str = src_bpe_sents[i].strip() # removes leading and trailing whitespaces
-        tgt_tok_str = tgt_bpe_sents[i].strip() # removes leading and trailing whitespaces
+        # removes leading and trailing whitespaces
+        src_tok_str = src_bpe_sents[i].strip() 
+        tgt_tok_str = tgt_bpe_sents[i].strip()
 
         def prepare_input_encoder(hub, tok_sentence):
-            generator = hub.task.build_generator(hub.models, hub.cfg)
             max_positions = utils.resolve_max_positions(
             hub.task.max_positions(), *[model.max_positions() for model in hub.models]
             )

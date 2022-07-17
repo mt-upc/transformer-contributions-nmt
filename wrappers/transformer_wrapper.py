@@ -43,7 +43,10 @@ class FairseqTransformerHub(GeneratorHubInterface):
         raise NotImplementedError()
     
     def decode(self, tensor, dictionary, as_string=False):
-        tok = dictionary.string(tensor).split()
+        #tok = dictionary.string(tensor).split()
+        tok = []
+        for token in torch.squeeze(tensor):
+            tok.append(dictionary[token])
         if as_string:
             return ''.join(tok).replace('▁', ' ')
         else:
@@ -92,20 +95,25 @@ class FairseqTransformerHub(GeneratorHubInterface):
             # Original target sentences
             tgt_word_sents = fword.readlines()
 
+        src_eos_id = self.task.src_dict.eos_index # EOS src token index
+        tgt_eos_id = self.task.tgt_dict.eos_index # EOS tgt token index
+
         src_tok_str = src_bpe_sents[i].strip() # removes leading and trailing whitespaces
-        src_tok = src_tok_str.split()
+        src_tok = src_tok_str.split() + [self.task.src_dict[src_eos_id]]
 
-        eos_id = self.task.tgt_dict.eos_index # EOS token index
-
-        tgt_tok_str = tgt_bpe_sents[i].strip() # removes leading and trailing whitespaces
-        tgt_tok = tgt_tok_str.split()
+        # removes leading and trailing whitespaces and add EOS
+        tgt_tok_str = tgt_bpe_sents[i].strip()
+        tgt_tok = [self.task.tgt_dict[tgt_eos_id]] + tgt_tok_str.split()
 
         # Add token to beginning of source sentence
         if hallucination is not None:
             src_tok = [hallucination] + ['▁'+ src_tok[0]] + src_tok[1:]
             #tgt_tok = ['<pad>'] + ['▁'+ tgt_tok[0]] + tgt_tok[1:]
-        src_tensor = torch.tensor([self.src_dict.index(t) for t in src_tok] + [eos_id])
-        tgt_tensor = torch.tensor([eos_id] + [self.tgt_dict.index(t) for t in tgt_tok])
+        # src_tensor = torch.tensor([self.src_dict.index(t) for t in src_tok] + [eos_id])
+        # tgt_tensor = torch.tensor([eos_id] + [self.tgt_dict.index(t) for t in tgt_tok])
+
+        src_tensor = torch.tensor([self.src_dict.index(t) for t in src_tok])
+        tgt_tensor = torch.tensor([self.tgt_dict.index(t) for t in tgt_tok])
 
         if test_src_word and test_tgt_word:
             src_word_sent = src_word_sents[i]

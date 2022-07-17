@@ -148,28 +148,21 @@ class aer():
                                 splited_tgt_word_sent = ['__tgt__'] + splited_tgt_word_sent
 
                             src_len = len(src_word_sent.split())
-
-                            ## Kobayashi word-word attention
-                            # src_word_to_bpe = align.convert_bpe_word(splited_src_bpe_sent, splited_src_word_sent)
-                            # tgt_word_to_bpe = align.convert_bpe_word(splited_tgt_bpe_sent, splited_tgt_word_sent)
                             
                             contrib_matrix = torch.squeeze(extract_matrix[i][mode][l]).detach().cpu().numpy()
 
                             if setting == "AWI":
                                 contrib_matrix = contrib_matrix[list(range(1,len(contrib_matrix)))+[0]]
 
-                            ## Ours word-word attention
+                            ## Word-word attention
                             source_sentence = splited_src_bpe_sent + ['</s>']
-                            target_sentence = splited_tgt_bpe_sent + ['</s>']
+                            target_sentence = ['</s>'] + splited_tgt_bpe_sent
                             predicted_sentence = splited_tgt_bpe_sent + ['</s>']
                             
                             contrib_matrix, words_in, words_out = align.contrib_tok2words(
                             contrib_matrix,
                             tokens_in=(source_sentence + target_sentence),
                             tokens_out=predicted_sentence)
-                            
-                            ## Kobayashi word-word attention
-                            # contrib_matrix = align.get_word_word_attention(contrib_matrix, src_word_to_bpe, tgt_word_to_bpe, remove_EOS=False)
 
                             # Eliminate language tags
                             if "m2m" in self.model_name_save:

@@ -13,5 +13,9 @@ quantitative_analysis_v2.ipynb
 trash.ipynb
 m2m_analysis.ipynb
 bart.ipynb
+generate.sh
+evaluation.ipynb
+tokenize_m2m_data.sh
+tokenize_data_preprocess.sh
 
 .vscode/

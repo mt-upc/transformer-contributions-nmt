@@ -19,6 +19,14 @@ You can select to evaluate interpretations using teacher forcing or free decodin
 
 For your particular multilingual NMT model you may be interested in modifying `prepare_input_decoder` and `prepare_input_encoder` functions in `./wrappers/multilingual_transformer_wrapper.py` to handle properly the language tags in the encoder and decoder inputs. Currently it follows M2M model structure. This corresponds to `--decoder-langtok` and `--encoder-langtok` parameters in `fairseq-generate`.
 
+To use the notebook in generate mode, provide the path to the binarized data after running `fairseq-preprocess` and select `data_sample = 'generate'` in `m2m_interpretability.ipynb`.
+
+*Since the method needs to access the activations of keys, queries, and values from the attention mechanism, we need to make fairseq avoid using PyTorch's attention implementation (F.multi_head_attention_forward) by commenting this part of the code in `fairseq/fairseq/modules/multihead_attention.py`:
+
+<p align="center"><br>
+<img src="./img/comment.png" class="center" title="paper logo" width="400"/>
+</p><br>
+
 ### Adding new languages
 Using FLORES-101 as an example (in case you want to try other languages), create the environmental variable where to store the dataset:
 
@@ -44,11 +52,3 @@ python path_to_fairseq/fairseq/scripts/spm_encode.py \
 
 cp $M2M_DATA_DIR/flores101_dataset/devtest/${TRG_LANG_CODE}.devtest ./data/flores/test.${TRG_LANG_CODE}
 ```
-
-To use the notebook in generate mode, provide the path to the binarized data after running `fairseq-preprocess` and select `data_sample = 'generate'` in `m2m_interpretability.ipynb`.
-
-*Since the method needs to access the activations of keys, queries, and values from the attention mechanism, we need to make fairseq avoid using PyTorch's attention implementation (F.multi_head_attention_forward) by commenting this part of the code in `fairseq/fairseq/modules/multihead_attention.py`:
-
-<p align="center"><br>
-<img src="./img/comment.png" class="center" title="paper logo" width="400"/>
-</p><br>

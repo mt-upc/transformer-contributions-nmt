@@ -17,8 +17,6 @@ Already tokenized data for a set of languages in [FLORES-101](https://github.com
 
 You can select to evaluate interpretations using teacher forcing or free decoding/beam search by setting `teacher_forcing` variable in the notebook.
 
-For your particular multilingual NMT model you may be interested in modifying `prepare_input_decoder` and `prepare_input_encoder` functions in `./wrappers/multilingual_transformer_wrapper.py` to handle properly the language tags in the encoder and decoder inputs. Currently it follows M2M model structure. This corresponds to `--decoder-langtok` and `--encoder-langtok` parameters in `fairseq-generate`.
-
 To use the notebook in generate mode, provide the path to the binarized data after running `fairseq-preprocess` and select `data_sample = 'generate'` in `m2m_interpretability.ipynb`.
 
 *Since the method needs to access the activations of keys, queries, and values from the attention mechanism, we need to make fairseq avoid using PyTorch's attention implementation (F.multi_head_attention_forward) by commenting this part of the code in `fairseq/fairseq/modules/multihead_attention.py`:

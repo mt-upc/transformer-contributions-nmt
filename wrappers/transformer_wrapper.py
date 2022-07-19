@@ -292,8 +292,15 @@ class FairseqTransformerHub(GeneratorHubInterface):
         )
         return attn_weights
     
-    def __get_contributions_module(self, layer_inputs, layer_outputs, contrib_type, pre_layer_norm, module_name):
+    def __get_contributions_module(self, layer_inputs, layer_outputs, contrib_type, module_name):
+        # Get info about module: encoder, decoder, self_attn, cross-attn
         enc_dec_, l, attn_module_ = self.parse_module_name(module_name)
+        # Get info about LN (Pre-LN or Post-LN)
+        if enc_dec_ == 'encoder':
+            pre_layer_norm = self.cfg['model'].encoder_normalize_before
+        else:
+            pre_layer_norm = self.cfg['model'].decoder_normalize_before
+        
         attn_w = self.__get_attn_weights_module(layer_outputs, module_name) # (batch_size, num_heads, src:len, src_len)
         
         def l_transform(x, w_ln):
@@ -374,12 +381,14 @@ class FairseqTransformerHub(GeneratorHubInterface):
         # Assert MHA output + residual is equal to 1st layer normalization input
         out_q_pre_ln = out_qv_pre_ln.sum(-2) +  b_o
 
-
-        if pre_layer_norm:
+        #### NEW
+        if pre_layer_norm==False:
+            # In post-ln we compare with the input of the first layernorm
+            out_q_pre_ln_th = layer_inputs[f"models.0.{enc_dec_}.layers.{l}.{attn_module_}_layer_norm"][0][0].transpose(0, 1)
+        else:
             if 'encoder' in enc_dec_:
-                 # Encoder (self-attention) -> final_layer_norm
+                # Encoder (self-attention) -> final_layer_norm
                 out_q_pre_ln_th = layer_inputs[f"models.0.{enc_dec_}.layers.{l}.final_layer_norm"][0][0].transpose(0, 1)
-                
             else:
                 if "self_attn" in attn_module_:
                     # Self-attention decoder -> encoder_attn_layer_norm
@@ -387,10 +396,24 @@ class FairseqTransformerHub(GeneratorHubInterface):
                 else:
                     # Cross-attention decoder -> final_layer_norm
                     out_q_pre_ln_th = layer_inputs[f"models.0.{enc_dec_}.layers.{l}.final_layer_norm"][0][0].transpose(0, 1)
+        #### NEW
+
+        # if pre_layer_norm:
+        #     if 'encoder' in enc_dec_:
+        #          # Encoder (self-attention) -> final_layer_norm
+        #         out_q_pre_ln_th = layer_inputs[f"models.0.{enc_dec_}.layers.{l}.final_layer_norm"][0][0].transpose(0, 1)
                 
-        else:
-            # In post-ln we compare with the input of the first layernorm
-            out_q_pre_ln_th = layer_inputs[f"models.0.{enc_dec_}.layers.{l}.{attn_module_}_layer_norm"][0][0].transpose(0, 1)
+        #     else:
+        #         if "self_attn" in attn_module_:
+        #             # Self-attention decoder -> encoder_attn_layer_norm
+        #             out_q_pre_ln_th = layer_inputs[f"models.0.{enc_dec_}.layers.{l}.encoder_attn_layer_norm"][0][0].transpose(0, 1)
+        #         else:
+        #             # Cross-attention decoder -> final_layer_norm
+        #             out_q_pre_ln_th = layer_inputs[f"models.0.{enc_dec_}.layers.{l}.final_layer_norm"][0][0].transpose(0, 1)
+                
+        # else:
+        #     # In post-ln we compare with the input of the first layernorm
+        #     out_q_pre_ln_th = layer_inputs[f"models.0.{enc_dec_}.layers.{l}.{attn_module_}_layer_norm"][0][0].transpose(0, 1)
         
         assert torch.dist(out_q_pre_ln_th, out_q_pre_ln).item() < 1e-3 * out_q_pre_ln.numel()
         
@@ -425,7 +448,7 @@ class FairseqTransformerHub(GeneratorHubInterface):
 
         return contributions, resultants_norm
     
-    def get_contributions(self, src_tensor, tgt_tensor, contrib_type='l1', norm_mode='min_sum', pre_layer_norm=False):
+    def get_contributions(self, src_tensor, tgt_tensor, contrib_type='l1', norm_mode='min_sum'):
         r"""
         Get contributions for each ATTN_MODULE: 'encoder.self_attn', 'decoder.self_attn', 'decoder.encoder_attn.
         Args:
@@ -450,9 +473,8 @@ class FairseqTransformerHub(GeneratorHubInterface):
                 self.__get_contributions_module,
                 layer_inputs,
                 layer_outputs,
-                contrib_type,
-                pre_layer_norm
-            )
+                contrib_type
+                )
 
         for attn in self.ATTN_MODULES:
             enc_dec_, _, attn_module_ = self.parse_module_name(attn)
@@ -477,7 +499,7 @@ class FairseqTransformerHub(GeneratorHubInterface):
         contributions_all = {k: torch.cat(v, dim=1) for k, v in contributions_all.items()}
         return contributions_all
 
-    def get_contribution_rollout(self, src_tensor, tgt_tensor, contrib_type='l1', norm_mode='min_sum', pre_layer_norm=False, **contrib_kwargs):
+    def get_contribution_rollout(self, src_tensor, tgt_tensor, contrib_type='l1', norm_mode='min_sum', **contrib_kwargs):
         # c = self.get_contributions(src_tensor, tgt_tensor, contrib_type, norm_mode, **contrib_kwargs)
         # if contrib_type == 'attn_w':
         #     c = {k: v.sum(2) for k, v in c.items()}
@@ -504,7 +526,7 @@ class FairseqTransformerHub(GeneratorHubInterface):
         enc_sa = 'encoder.self_attn'
 
         # Compute contributions rollout encoder self-attn
-        enc_self_attn_contributions = torch.squeeze(self.get_contributions(src_tensor, tgt_tensor, contrib_type, norm_mode=norm_mode, pre_layer_norm=pre_layer_norm)[enc_sa])
+        enc_self_attn_contributions = torch.squeeze(self.get_contributions(src_tensor, tgt_tensor, contrib_type, norm_mode=norm_mode)[enc_sa])
         layers, _, _ = enc_self_attn_contributions.size()
         enc_self_attn_contributions_mix = compute_joint_attention(enc_self_attn_contributions)
         c_roll[enc_sa] = enc_self_attn_contributions_mix.detach().clone()
@@ -557,8 +579,8 @@ class FairseqTransformerHub(GeneratorHubInterface):
         dec_ed = 'decoder.encoder_attn'
         
         # Compute joint cross + self attention
-        self_dec_contributions = torch.squeeze(self.get_contributions(src_tensor, tgt_tensor, contrib_type, norm_mode=norm_mode, pre_layer_norm=pre_layer_norm)[dec_sa])
-        cross_contributions = torch.squeeze(self.get_contributions(src_tensor, tgt_tensor, contrib_type, norm_mode=norm_mode, pre_layer_norm=pre_layer_norm)[dec_ed])
+        self_dec_contributions = torch.squeeze(self.get_contributions(src_tensor, tgt_tensor, contrib_type, norm_mode=norm_mode)[dec_sa])
+        cross_contributions = torch.squeeze(self.get_contributions(src_tensor, tgt_tensor, contrib_type, norm_mode=norm_mode)[dec_ed])
         self_dec_contributions = (self_dec_contributions.transpose(1,2)*cross_contributions[:,:,-1].unsqueeze(1)).transpose(1,2)
         joint_self_cross_contributions = torch.cat((cross_contributions[:,:,:-1],self_dec_contributions),dim=-1)
 

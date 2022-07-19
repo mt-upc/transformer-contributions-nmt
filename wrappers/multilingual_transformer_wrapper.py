@@ -121,13 +121,17 @@ class FairseqMultilingualTransformerHub(FairseqTransformerHub):
 
         def prepare_input_decoder(hub, tok_sentence):
             tok_sentence = tok_sentence.split()
-            lang = hub.task.args.langtoks["main"][1]
-            if lang == 'tgt':
-                lang_tok = hub.task.args.target_lang
+            if self.cfg['model'].decoder_langtok:
+                lang = hub.task.args.langtoks["main"][1]
+                if lang == 'tgt':
+                    lang_tok = hub.task.args.target_lang
+                else:
+                    lang_tok = hub.task.args.source_lang
+                lang_tok = get_lang_tok(lang=lang_tok, lang_tok_style=LangTokStyle.multilingual.value)
+                tgt_tok = [hub.task.target_dictionary[hub.task.target_dictionary.eos_index]] + [lang_tok] + tok_sentence
             else:
-                lang_tok = hub.task.args.source_lang
-            lang_tok = get_lang_tok(lang=lang_tok, lang_tok_style=LangTokStyle.multilingual.value)
-            tgt_tok = [hub.task.target_dictionary[hub.task.target_dictionary.eos_index]] + [lang_tok] + tok_sentence
+                print('No decoder langtok used')
+                tgt_tok = [hub.task.target_dictionary[hub.task.target_dictionary.eos_index]] + tok_sentence
             tgt_tensor = torch.tensor([hub.task.target_dictionary.index(t) for t in tgt_tok])
             return tgt_tok, tgt_tensor
 

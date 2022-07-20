@@ -62,8 +62,12 @@ class FairseqTransformerHub(GeneratorHubInterface):
         src_sent = self.decode(src_tensor, self.task.src_dict, as_string=True)
 
         tgt_tensor = self.task.dataset(split)[index]['target']
+        # get_sample returns tensor [..., </s>]
+        # we need [</s>, ...] to feed into the decoder
+        tgt_tensor = torch.cat([torch.tensor([tgt_tensor[-1]]), tgt_tensor[:-1]])
         tgt_tok = self.decode(tgt_tensor, self.task.tgt_dict)
         tgt_sent = self.decode(tgt_tensor, self.task.tgt_dict, as_string=True)
+        
 
         return {
                 'src_tok': src_tok,

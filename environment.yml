@@ -1,0 +1,24 @@
+name: alti_plus
+
+channels:
+  - pytorch
+  - conda-forge
+
+dependencies:
+  - pip=22.0.3
+  - python=3.8.0
+  - ipython=7.33.0
+  - jupyterlab=3.3.4
+  - ipywidgets=7.6.5
+  - numpy=1.23.1
+  - pandas=1.1.5
+  - matplotlib=3.5.2
+  - cudatoolkit=11.3.1
+  - scikit-learn=1.0.2
+  - python-dotenv=0.20.0
+  - pyarrow=3.0.0
+  - spacy=3.3.1
+  - pip:
+    - seaborn==0.11.2
+    - einops==0.4.1
+    - sacremoses==0.0.53

@@ -18,8 +18,6 @@ evaluation.ipynb
 tokenize_m2m_data.sh
 tokenize_data_preprocess.sh
 m2m_analysis_copy.ipynb
-muss_interpretability.ipynb
-wrappers/transformer_wrapper_tan.py
-wrappers/bart_wrapper.py
+nllb_interpretability.ipynb
 
 .vscode/

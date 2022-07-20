@@ -29,13 +29,13 @@ def get_normalized_rank(x):
     rank_normalized = rank/length_tok_sentence
     return rank_normalized
 
-def visualize_alti(total_alti, source_sentence, target_sentence, predicted_sentence, word_level, alignment, all_layers=False):
+def visualize_alti(total_alti, source_sentence, target_sentence, predicted_sentence, word_level, alignment, figsize=(17, 24), all_layers=False):
 
     def plot_heatmap_alti(contributions_rollout_layer_np, source_sentence_,
                                   target_sentence_, predicted_sentence_):
 
         sns.set_style("whitegrid")
-        fig = plt.figure(figsize=(17, 24), dpi=200)
+        fig = plt.figure(figsize=figsize, dpi=200)
         gs = GridSpec(3, 6)
         gs.update(wspace=1, hspace=0.05)
         ax_main = plt.subplot(gs[0:3, :5])

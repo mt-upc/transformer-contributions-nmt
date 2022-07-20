@@ -69,6 +69,9 @@ class FairseqMultilingualTransformerHub(FairseqTransformerHub):
         src_sent = self.decode(src_tensor, self.task.source_dictionary, as_string=True)
 
         tgt_tensor = self.task.dataset(split)[index]['target']
+        # get_sample returns tensor [lang_tok, ..., </s>]
+        # we need [</s>, lang_tok, ...] to feed into the decoder
+        tgt_tensor = torch.cat([torch.tensor([tgt_tensor[-1]]), tgt_tensor[:-1]])
         tgt_tok = self.decode(tgt_tensor, self.task.target_dictionary)
         tgt_sent = self.decode(tgt_tensor, self.task.target_dictionary, as_string=True)
 

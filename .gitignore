@@ -19,5 +19,8 @@ tokenize_m2m_data.sh
 tokenize_data_preprocess.sh
 m2m_analysis_copy.ipynb
 nllb_interpretability.ipynb
+prepare-iwslt14.sh
+preprocess_bilingual_data.sh
+preprocess.py
 
 .vscode/
